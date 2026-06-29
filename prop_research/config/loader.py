@@ -17,6 +17,13 @@ def load_prop_firm_config(path: str | Path) -> PropFirmConfig:
                 name=str(stage["name"]),
                 profit_target=float(stage["profit_target"]),
                 max_loss=float(stage["max_loss"]),
+                max_loss_mode=str(stage.get("max_loss_mode", "amount")),
+                daily_loss=float(stage["daily_loss"]) if stage.get("daily_loss") is not None else None,
+                daily_loss_mode=str(stage.get("daily_loss_mode", "amount")),
+                max_risk_per_trade=float(stage["max_risk_per_trade"])
+                if stage.get("max_risk_per_trade") is not None
+                else None,
+                drawdown_mode=str(stage.get("drawdown_mode", "static")),
             )
             for stage in raw["stages"]
         ],
@@ -24,6 +31,12 @@ def load_prop_firm_config(path: str | Path) -> PropFirmConfig:
             profit_target_for_first_payout=float(raw["funded"]["profit_target_for_first_payout"]),
             max_loss=float(raw["funded"]["max_loss"]),
             trader_split=float(raw["funded"]["trader_split"]),
+            max_loss_mode=str(raw["funded"].get("max_loss_mode", "amount")),
+            daily_loss=float(raw["funded"]["daily_loss"]) if raw["funded"].get("daily_loss") is not None else None,
+            daily_loss_mode=str(raw["funded"].get("daily_loss_mode", "amount")),
+            max_risk_per_trade=float(raw["funded"]["max_risk_per_trade"])
+            if raw["funded"].get("max_risk_per_trade") is not None
+            else None,
+            drawdown_mode=str(raw["funded"].get("drawdown_mode", "static")),
         ),
     )
-

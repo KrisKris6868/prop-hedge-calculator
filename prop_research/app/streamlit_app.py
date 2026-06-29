@@ -19,7 +19,7 @@ from prop_research.app.hedge_model import (
 )
 from prop_research.app.risk_curve import build_risk_curve
 from prop_research.config.loader import load_prop_firm_config
-from prop_research.domain.config import StageConfig
+from prop_research.domain.config import FundedConfig, PropFirmConfig, StageConfig
 from prop_research.optimization.grid_search import GridSearchOptimizer
 from prop_research.simulation.monte_carlo import MonteCarloEngine, SimulationConfig
 from prop_research.strategies.continuous import ContinuousPersonalRiskStrategy
@@ -31,107 +31,39 @@ def main() -> None:
     import pandas as pd
     import streamlit as st
 
-    st.set_page_config(page_title="Prop Research", layout="wide")
-    st.title("Расчет личного риска для 1к1 хеджа")
-    st.caption(
-        "Проп-счет и личный счет открывают один и тот же инструмент в противоположные стороны. "
-        "Stop Loss и Take Profit считаются 1 к 1. Рынок не моделируется: есть только Win/Loss."
-    )
+    st.set_page_config(page_title="Prop Hedge Calculator", layout="wide")
+    st.title("Калькулятор хеджа проп-счета")
 
-    config_path = st.sidebar.text_input("Файл правил проп-фирмы", "configs/example_prop_firm.json")
+    if st.sidebar.button("Сбросить настройки", use_container_width=True):
+        st.session_state.clear()
+        st.rerun()
+
+    with st.sidebar.expander("Расширенные настройки", expanded=False):
+        config_path = st.text_input("Файл правил", "configs/example_prop_firm.json")
+
     prop_firm = load_prop_firm_config(Path(config_path))
+    prop_firm = _sidebar_rules(st, prop_firm)
 
-    st.sidebar.subheader("Цена проп-счета")
-    challenge_fee = st.sidebar.number_input("Цена челленджа, $", value=prop_firm.challenge_fee, min_value=1.0, step=10.0)
-    nominal_balance = st.sidebar.number_input(
-        "Размер проп-счета, $",
-        value=prop_firm.nominal_balance,
-        min_value=1_000.0,
-        step=1_000.0,
-    )
-    prop_firm = replace(
-        prop_firm,
-        challenge_fee=float(challenge_fee),
-        nominal_balance=float(nominal_balance),
-    )
+    max_challenge_risk = max(stage.max_risk_per_trade or prop_firm.nominal_balance for stage in prop_firm.stages)
+    max_funded_risk = prop_firm.funded.max_risk_per_trade or prop_firm.nominal_balance
+    max_prop_risk_percent = max(max_challenge_risk, max_funded_risk) / prop_firm.nominal_balance * 100
 
-    st.sidebar.subheader("Правила челленджа")
-    challenge_type = st.sidebar.radio("Тип челленджа", ["1 фазный", "2 фазный"], horizontal=True)
-    default_phase_1 = prop_firm.stages[0]
-    default_phase_2 = prop_firm.stages[1] if len(prop_firm.stages) > 1 else prop_firm.stages[0]
-    phase_1_profit_target = st.sidebar.number_input(
-        "1 стадия: profit target, $",
-        value=default_phase_1.profit_target,
-        min_value=1.0,
-        step=500.0,
-    )
-    phase_1_max_loss = st.sidebar.number_input(
-        "1 стадия: max loss, $",
-        value=default_phase_1.max_loss,
-        min_value=1.0,
-        step=500.0,
-    )
-    stages = [
-        StageConfig(name="phase_1", profit_target=float(phase_1_profit_target), max_loss=float(phase_1_max_loss))
-    ]
-    if challenge_type == "2 фазный":
-        phase_2_profit_target = st.sidebar.number_input(
-            "2 стадия: profit target, $",
-            value=default_phase_2.profit_target,
-            min_value=1.0,
-            step=500.0,
-        )
-        phase_2_max_loss = st.sidebar.number_input(
-            "2 стадия: max loss, $",
-            value=default_phase_2.max_loss,
-            min_value=1.0,
-            step=500.0,
-        )
-        stages.append(
-            StageConfig(name="phase_2", profit_target=float(phase_2_profit_target), max_loss=float(phase_2_max_loss))
-        )
-    prop_firm = replace(prop_firm, stages=stages)
-
-    prop_risk_percent = st.sidebar.number_input("Риск проп-счета на сделку, %", value=1.0, step=0.1)
-    prop_risk_amount_for_step = prop_firm.nominal_balance * prop_risk_percent / 100
-    st.sidebar.subheader("Funded")
-    payout_profit_target = st.sidebar.number_input(
-        "Профит до первой выплаты, $",
-        value=prop_firm.funded.profit_target_for_first_payout,
-        min_value=1.0,
-        step=500.0,
-    )
-    funded_max_loss = st.sidebar.number_input(
-        "Funded: max loss, $",
-        value=prop_firm.funded.max_loss,
-        min_value=1.0,
-        step=500.0,
-    )
-    trader_split_percent = st.sidebar.number_input(
-        "Профит сплит трейдера, %",
-        value=prop_firm.funded.trader_split * 100,
-        min_value=1.0,
-        max_value=100.0,
-        step=1.0,
-    )
-    prop_firm = replace(
-        prop_firm,
-        funded=replace(
-            prop_firm.funded,
-            profit_target_for_first_payout=float(payout_profit_target),
-            max_loss=float(funded_max_loss),
-            trader_split=float(trader_split_percent) / 100,
-        ),
+    st.sidebar.subheader("Риск и личный счет")
+    prop_risk_percent = st.sidebar.number_input(
+        "Риск пропа до лимитов, %",
+        value=min(1.0, float(max_prop_risk_percent)),
+        min_value=0.01,
+        max_value=float(max_prop_risk_percent),
+        step=0.1,
     )
     recommended_balance = minimum_personal_deposit_for_strict_free_prop(
         config=prop_firm,
         prop_risk_percent=prop_risk_percent,
     ).minimum_personal_deposit
-    st.sidebar.subheader("Личный счет")
-    st.sidebar.metric("Рекомендуемый баланс", f"${recommended_balance:,.2f}")
-    use_recommended_balance = st.sidebar.checkbox("Использовать рекомендуемый баланс", value=True)
+    st.sidebar.metric("Рекомендуемый личный депозит", _money(recommended_balance))
+    use_recommended_balance = st.sidebar.checkbox("Использовать рекомендуемый депозит", value=True)
     custom_personal_balance = st.sidebar.number_input(
-        "Баланс личного счета, $",
+        "Начальный личный депозит, $",
         value=float(recommended_balance),
         min_value=0.0,
         step=10.0,
@@ -139,286 +71,395 @@ def main() -> None:
     )
     initial_personal_balance = float(recommended_balance if use_recommended_balance else custom_personal_balance)
     coverage_label = st.sidebar.radio(
-        "Что должно произойти при потере пропа",
+        "При потере пропа",
         [
-            "Личный депозит должен вырасти на цену челленджа",
-            "На личном счете должно хватить на новый челлендж",
+            "Личный депозит растет на цену челленджа",
+            "На личном хватает на новый челлендж",
         ],
     )
     coverage_mode = (
         CoverageMode.GROW_DEPOSIT_BY_FEE
-        if coverage_label == "Личный депозит должен вырасти на цену челленджа"
+        if coverage_label == "Личный депозит растет на цену челленджа"
         else CoverageMode.BALANCE_COVERS_NEXT_CHALLENGE
     )
+    hedge_funded = not st.sidebar.checkbox("Не хеджировать funded", value=False)
+
+    with st.sidebar.expander("Новости", expanded=False):
+        consider_news = st.checkbox("Учитывать новости", value=False)
+        forced_close_r = st.number_input("Forced close result, R", value=0.0, step=0.1, disabled=not consider_news)
+
     stage_options = {
         **{f"phase_{index + 1}": f"Этап {index + 1}: {stage.name}" for index, stage in enumerate(prop_firm.stages)},
         "funded": "Funded до первой выплаты",
     }
 
-    st.subheader("0. Калькулятор одной сделки")
-    st.write(
-        "Введи текущее состояние, и калькулятор даст один ответ: сколько долларов риска поставить "
-        "на личном счете. Сделка всегда зеркальная 1к1 по направлению."
+    calculator_tab, simulation_tab, research_tab, instant_tab, prop_vs_prop_tab, principles_tab = st.tabs(
+        [
+            "Калькулятор сделки",
+            "Симуляции / Monte Carlo",
+            "Исследования",
+            "Инстант счета",
+            "Prop vs Prop",
+            "Принципы выбора пропа",
+        ]
     )
-    calc_col_1, calc_col_2 = st.columns(2)
-    calculator_stage_key = calc_col_1.selectbox(
-        "Текущая стадия",
-        list(stage_options.keys()),
-        format_func=stage_options.get,
-        key="calculator_stage",
+
+    with calculator_tab:
+        _render_trade_calculator(
+            st=st,
+            pd=pd,
+            prop_firm=prop_firm,
+            stage_options=stage_options,
+            initial_personal_balance=initial_personal_balance,
+            recommended_balance=recommended_balance,
+            prop_risk_percent=prop_risk_percent,
+            coverage_mode=coverage_mode,
+            hedge_funded=hedge_funded,
+            consider_news=consider_news,
+            forced_close_r=forced_close_r,
+        )
+
+    with simulation_tab:
+        _render_monte_carlo(
+            st=st,
+            prop_firm=prop_firm,
+            initial_personal_balance=initial_personal_balance,
+            prop_risk_percent=prop_risk_percent,
+        )
+
+    with research_tab:
+        _render_research(
+            st=st,
+            pd=pd,
+            prop_firm=prop_firm,
+            stage_options=stage_options,
+            initial_personal_balance=initial_personal_balance,
+            prop_risk_percent=prop_risk_percent,
+            coverage_mode=coverage_mode,
+            hedge_funded=hedge_funded,
+        )
+
+    with instant_tab:
+        _render_instant_accounts(st)
+
+    with prop_vs_prop_tab:
+        _render_prop_vs_prop(st, prop_firm)
+
+    with principles_tab:
+        _render_prop_selection_principles(st)
+
+
+def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
+    st.sidebar.subheader("Счет и челлендж")
+    challenge_fee = st.sidebar.number_input("Цена челленджа, $", value=prop_firm.challenge_fee, min_value=1.0, step=10.0)
+    nominal_balance = st.sidebar.number_input(
+        "Размер проп-счета, $",
+        value=prop_firm.nominal_balance,
+        min_value=1_000.0,
+        step=1_000.0,
     )
-    current_prop_pnl_abs = calc_col_2.number_input(
-        "Текущий PnL пропа на стадии, $",
+
+    st.sidebar.subheader("Challenge")
+    challenge_type = st.sidebar.radio("Тип челленджа", ["1 фазный", "2 фазный"], horizontal=True)
+    stages: list[StageConfig] = []
+    source_stages = prop_firm.stages if len(prop_firm.stages) > 1 else [prop_firm.stages[0], prop_firm.stages[0]]
+    for index, default_stage in enumerate(source_stages[: 2 if challenge_type == "2 фазный" else 1], start=1):
+        with st.sidebar.expander(f"Этап {index}", expanded=index == 1):
+            profit_target = st.number_input(
+                f"Этап {index}: profit target, $",
+                value=default_stage.profit_target,
+                min_value=1.0,
+                step=500.0,
+                key=f"phase_{index}_target",
+            )
+            max_loss_mode = st.radio(
+                f"Этап {index}: max loss режим",
+                ["amount", "percent"],
+                index=0 if default_stage.max_loss_mode == "amount" else 1,
+                horizontal=True,
+                key=f"phase_{index}_max_loss_mode",
+            )
+            max_loss_input = st.number_input(
+                f"Этап {index}: max loss",
+                value=_from_amount(default_stage.max_loss, max_loss_mode, prop_firm.nominal_balance),
+                min_value=0.01,
+                step=500.0 if max_loss_mode == "amount" else 0.1,
+                key=f"phase_{index}_max_loss",
+            )
+            daily_loss_mode = st.radio(
+                f"Этап {index}: daily loss режим",
+                ["amount", "percent"],
+                index=0 if default_stage.daily_loss_mode == "amount" else 1,
+                horizontal=True,
+                key=f"phase_{index}_daily_loss_mode",
+            )
+            default_daily_loss = default_stage.daily_loss or default_stage.max_loss / 2
+            daily_loss_input = st.number_input(
+                f"Этап {index}: daily loss",
+                value=_from_amount(default_daily_loss, daily_loss_mode, prop_firm.nominal_balance),
+                min_value=0.01,
+                step=500.0 if daily_loss_mode == "amount" else 0.1,
+                key=f"phase_{index}_daily_loss",
+            )
+            max_risk = st.number_input(
+                f"Этап {index}: max risk per trade, $",
+                value=float(default_stage.max_risk_per_trade or prop_firm.prop_risk_per_trade),
+                min_value=1.0,
+                step=100.0,
+                key=f"phase_{index}_max_risk",
+            )
+            drawdown_mode = st.radio(
+                f"Этап {index}: drawdown",
+                ["static", "trailing"],
+                index=0 if default_stage.drawdown_mode == "static" else 1,
+                horizontal=True,
+                key=f"phase_{index}_drawdown",
+            )
+            stages.append(
+                StageConfig(
+                    name=f"phase_{index}",
+                    profit_target=float(profit_target),
+                    max_loss=_to_amount(float(max_loss_input), max_loss_mode, prop_firm.nominal_balance),
+                    max_loss_mode=max_loss_mode,
+                    daily_loss=_to_amount(float(daily_loss_input), daily_loss_mode, prop_firm.nominal_balance),
+                    daily_loss_mode=daily_loss_mode,
+                    max_risk_per_trade=float(max_risk),
+                    drawdown_mode=drawdown_mode,
+                )
+            )
+
+    st.sidebar.subheader("Funded")
+    funded = prop_firm.funded
+    funded_profit_target_enabled = st.sidebar.checkbox("Funded profit target", value=True)
+    funded_profit_target = st.sidebar.number_input(
+        "Funded: profit target, $",
+        value=funded.profit_target_for_first_payout,
+        min_value=1.0,
+        step=500.0,
+        disabled=not funded_profit_target_enabled,
+    )
+    funded_max_loss_mode = st.sidebar.radio(
+        "Funded: max loss режим",
+        ["amount", "percent"],
+        index=0 if funded.max_loss_mode == "amount" else 1,
+        horizontal=True,
+    )
+    funded_max_loss = st.sidebar.number_input(
+        "Funded: max loss",
+        value=_from_amount(funded.max_loss, funded_max_loss_mode, prop_firm.nominal_balance),
+        min_value=0.01,
+        step=500.0 if funded_max_loss_mode == "amount" else 0.1,
+    )
+    funded_daily_loss_mode = st.sidebar.radio(
+        "Funded: daily loss режим",
+        ["amount", "percent"],
+        index=0 if funded.daily_loss_mode == "amount" else 1,
+        horizontal=True,
+    )
+    funded_daily_loss = st.sidebar.number_input(
+        "Funded: daily loss",
+        value=_from_amount(funded.daily_loss or funded.max_loss / 2, funded_daily_loss_mode, prop_firm.nominal_balance),
+        min_value=0.01,
+        step=500.0 if funded_daily_loss_mode == "amount" else 0.1,
+    )
+    funded_max_risk = st.sidebar.number_input(
+        "Funded: max risk per trade, $",
+        value=float(funded.max_risk_per_trade or prop_firm.prop_risk_per_trade),
+        min_value=1.0,
+        step=100.0,
+    )
+    trader_split_percent = st.sidebar.number_input(
+        "Profit split трейдера, %",
+        value=funded.trader_split * 100,
+        min_value=1.0,
+        max_value=100.0,
+        step=1.0,
+    )
+    funded_drawdown_mode = st.sidebar.radio(
+        "Funded: drawdown",
+        ["static", "trailing"],
+        index=0 if funded.drawdown_mode == "static" else 1,
+        horizontal=True,
+    )
+    if funded_drawdown_mode == "trailing":
+        st.sidebar.caption("Trailing drawdown требует state machine и будет учитываться в симуляции отдельным шагом.")
+
+    return PropFirmConfig(
+        challenge_fee=float(challenge_fee),
+        nominal_balance=float(nominal_balance),
+        stages=stages,
+        funded=FundedConfig(
+            profit_target_for_first_payout=float(funded_profit_target if funded_profit_target_enabled else nominal_balance),
+            max_loss=_to_amount(float(funded_max_loss), funded_max_loss_mode, float(nominal_balance)),
+            trader_split=float(trader_split_percent) / 100,
+            max_loss_mode=funded_max_loss_mode,
+            daily_loss=_to_amount(float(funded_daily_loss), funded_daily_loss_mode, float(nominal_balance)),
+            daily_loss_mode=funded_daily_loss_mode,
+            max_risk_per_trade=float(funded_max_risk),
+            drawdown_mode=funded_drawdown_mode,
+        ),
+        prop_risk_per_trade=prop_firm.prop_risk_per_trade,
+    )
+
+
+def _render_trade_calculator(
+    st,
+    pd,
+    prop_firm: PropFirmConfig,
+    stage_options: dict[str, str],
+    initial_personal_balance: float,
+    recommended_balance: float,
+    prop_risk_percent: float,
+    coverage_mode: CoverageMode,
+    hedge_funded: bool,
+    consider_news: bool,
+    forced_close_r: float,
+) -> None:
+    stage_plan = build_stage_plan(prop_firm, initial_personal_balance, prop_risk_percent, coverage_mode)
+    top_1, top_2, top_3 = st.columns(3)
+    top_1.metric("Начальный личный депозит", _money(initial_personal_balance))
+    top_2.metric("Рекомендуемый личный депозит", _money(recommended_balance))
+    top_3.metric("Цена челленджа", _money(prop_firm.challenge_fee))
+
+    input_1, input_2 = st.columns(2)
+    stage_key = input_1.selectbox("Текущая стадия", list(stage_options.keys()), format_func=stage_options.get)
+    max_risk = _stage_max_risk(prop_firm, stage_key)
+    current_prop_pnl_abs = input_2.number_input(
+        "Текущий PnL пропа, $",
         value=0.0,
-        step=float(prop_risk_amount_for_step) if prop_risk_amount_for_step > 0 else 100.0,
-        help="Кнопки +/- двигают PnL на размер риска пропа. Вручную можно ввести любое число.",
+        step=float(max_risk),
     )
-    is_drawdown = calc_col_2.checkbox("Это просадка", value=False)
+    is_drawdown = input_2.checkbox("Это просадка", value=False)
     current_prop_pnl = -abs(current_prop_pnl_abs) if is_drawdown else abs(current_prop_pnl_abs)
+
     personal_balance_state = calculate_personal_balance_from_prop_pnl(
         config=prop_firm,
-        stage_key=calculator_stage_key,
+        stage_key=stage_key,
         current_prop_pnl=current_prop_pnl,
         initial_personal_balance=initial_personal_balance,
         prop_risk_percent=prop_risk_percent,
         mode=coverage_mode,
     )
     current_personal_balance = float(personal_balance_state["Текущий баланс личного счета, $"])
-    trade_instruction = calculate_personal_risk_for_trade(
+    if stage_key == "funded" and not hedge_funded:
+        current_personal_balance = float(personal_balance_state["Старт личного счета на стадии, $"])
+
+    daily_loss_limit = _stage_daily_loss(prop_firm, stage_key)
+    trade = calculate_personal_risk_for_trade(
         config=prop_firm,
-        stage_key=calculator_stage_key,
+        stage_key=stage_key,
         current_prop_pnl=current_prop_pnl,
         initial_personal_balance=initial_personal_balance,
         current_personal_balance=current_personal_balance,
         prop_risk_percent=prop_risk_percent,
         mode=coverage_mode,
-    )
-    action_col_1, action_col_2, action_col_3 = st.columns(3)
-    action_col_1.metric("Риск пропа", f"${float(trade_instruction['Риск пропа, $']):,.2f}")
-    action_col_2.metric("Открыть риск на личном", f"${float(trade_instruction['Риск личного, $']):,.2f}")
-    action_col_3.metric("Loss до потери пропа", f"{float(trade_instruction['Loss до потери пропа']):.2f}")
-    balance_col_1, balance_col_2, balance_col_3 = st.columns(3)
-    balance_col_1.metric(
-        "Старт личного на стадии",
-        f"${float(personal_balance_state['Старт личного счета на стадии, $']):,.2f}",
-    )
-    balance_col_2.metric(
-        "Авто-баланс личного сейчас",
-        f"${current_personal_balance:,.2f}",
-    )
-    balance_col_3.metric(
-        "Изменение личного на стадии",
-        f"${float(personal_balance_state['Изменение личного счета на стадии, $']):,.2f}",
-    )
-    st.info(
-        f"Если на пропе Long, на личном Short. Если на пропе Short, на личном Long. "
-        f"Цель личного счета при потере пропа: "
-        f"${float(trade_instruction['Цель личного счета при потере пропа, $']):,.2f}."
+        max_risk_per_trade=max_risk,
+        target_enabled=True,
+        daily_loss_limit=daily_loss_limit,
+        hedge_funded=hedge_funded,
     )
 
-    funded_profit_for_preview = (
-        current_prop_pnl if calculator_stage_key == "funded" else prop_firm.funded.profit_target_for_first_payout
-    )
-    payout_preview = calculate_funded_payout_preview(
-        config=prop_firm,
-        initial_personal_balance=initial_personal_balance,
-        prop_risk_percent=prop_risk_percent,
-        funded_profit=funded_profit_for_preview,
-        mode=coverage_mode,
-    )
-    st.subheader("Выплата на funded")
-    payout_top_1, payout_top_2, payout_top_3 = st.columns(3)
-    payout_top_1.metric("Профит на funded", f"${payout_preview['Профит на funded, $']:,.2f}")
-    payout_top_2.metric("К выплате после сплита", f"${payout_preview['К выплате после сплита, $']:,.2f}")
-    payout_top_3.metric("Чистыми после личных затрат", f"${payout_preview['Чистыми после личных затрат, $']:,.2f}")
-    st.caption(
-        f"Формула: ${payout_preview['Профит на funded, $']:,.2f} * "
-        f"{payout_preview['Профит сплит, %']:.0f}% = "
-        f"${payout_preview['К выплате после сплита, $']:,.2f}. "
-        f"Затем вычитаем затраты личного счета до этого funded profit: "
-        f"${payout_preview['Затраты личного счета до текущего funded profit, $']:,.2f}."
-    )
-
-    stage_plan = build_stage_plan(
-        config=prop_firm,
-        initial_personal_balance=initial_personal_balance,
-        prop_risk_percent=prop_risk_percent,
-        mode=coverage_mode,
-    )
-    dealing_instruction = build_dealing_instruction(
-        config=prop_firm,
-        initial_personal_balance=initial_personal_balance,
-        prop_risk_percent=prop_risk_percent,
-        mode=coverage_mode,
-    )
-    free_prop_requirement = minimum_personal_deposit_for_strict_free_prop(
-        config=prop_firm,
-        prop_risk_percent=prop_risk_percent,
-    )
-
-    st.subheader("1. Можно ли сделать проп бесплатным?")
-    st.write(
-        "Если понимать «бесплатно» строго: при потере пропа личный счет должен восстановить цену "
-        "нового челленджа, а при успешном пути до первой выплаты не должно потребоваться дополнительных денег."
-    )
-
-    col_free_1, col_free_2, col_free_3 = st.columns(3)
-    col_free_1.metric("Минимальная личная подушка", f"${free_prop_requirement.minimum_personal_deposit:,.2f}")
-    col_free_2.metric("Цена челленджа", f"${free_prop_requirement.challenge_fee:,.2f}")
-    col_free_3.metric("Капитал до первой выплаты", f"${free_prop_requirement.total_capital_before_payout:,.2f}")
-
-    if initial_personal_balance >= free_prop_requirement.minimum_personal_deposit:
-        st.success(
-            "С такой личной подушкой строгая модель теоретически помещается до первой выплаты."
-        )
+    risk_1, risk_2, risk_3, risk_4 = st.columns(4)
+    risk_1.metric("Риск пропа", _money(float(trade["Риск пропа, $"])))
+    risk_2.metric("Риск личного", _money(float(trade["Риск личного, $"])))
+    if float(trade["prop_to_personal_risk_multiple"]) > 0:
+        risk_3.metric("Во сколько раз меньше", f"{float(trade['prop_to_personal_risk_multiple']):.2f}x")
     else:
-        missing = free_prop_requirement.minimum_personal_deposit - initial_personal_balance
-        st.error(
-            f"С личным депозитом ${initial_personal_balance:,.2f} строгий бесплатный режим не сходится. "
-            f"Не хватает примерно ${missing:,.2f} личной подушки. "
-            "Это не вопрос психологии или интерфейса, а следствие правил: проп должен пройти несколько целей, "
-            "а зеркальный личный счет в это время теряет деньги."
-        )
+        risk_3.metric("Во сколько раз меньше", "нет хеджа")
+    risk_4.metric("Личный риск от пропа", _percent(float(trade["personal_risk_percent_of_prop"])))
 
-    st.subheader("2. Автоматический расчет риска по этапам")
-    st.write(
-        "Это расчет не по психологии и не по догадке. Для каждой стадии программа считает, "
-        "какой риск на личном счете нужен, чтобы при вылете пропа по max loss выполнить выбранное условие."
-    )
+    status_1, status_2, status_3, status_4 = st.columns(4)
+    status_1.metric("Текущая стадия", stage_options[stage_key])
+    status_2.metric("Авто-баланс личного", _money(current_personal_balance))
+    status_3.metric("Осталось до цели", _money(float(trade["distance_to_target"])))
+    status_4.metric("Осталось до max loss", _money(float(trade["distance_to_max_loss"])))
 
-    col_auto_1, col_auto_2, col_auto_3 = st.columns(3)
-    col_auto_1.metric("Риск пропа на сделку", f"${stage_plan.prop_risk_amount:,.0f}")
-    col_auto_2.metric("Цена челленджа", f"${prop_firm.challenge_fee:,.0f}")
-    col_auto_3.metric("Личный депозит", f"${initial_personal_balance:,.0f}")
+    st.success(str(trade["target_status"]))
+    if consider_news:
+        st.info(f"Новости учитываются как forced close, а не как штраф. Текущий сценарий закрытия: {forced_close_r:.2f}R.")
 
-    plan_df = pd.DataFrame(
+    next_personal_risk = float(trade["Риск личного, $"])
+    next_prop_risk = float(trade["Риск пропа, $"])
+    deal_table = pd.DataFrame(
         [
             {
-                "Стадия": row.stage_name,
-                "Старт личного счета, $": row.starting_personal_balance,
-                "Нужный риск личного, $": row.required_personal_risk,
-                "Нужный риск личного, % от риска пропа": round(
-                    row.required_personal_risk / stage_plan.prop_risk_amount * 100, 2
-                )
-                if stage_plan.prop_risk_amount > 0
-                else 0.0,
-                "Если стадия пройдена: потеря личного, $": row.personal_loss_if_stage_passed,
-                "Личный счет после прохода, $": row.personal_balance_after_stage_passed,
-                "Личный счет при вылете пропа, $": row.personal_balance_if_stage_failed,
+                "PnL пропа": _money(current_prop_pnl),
+                "Осталось до цели": _money(float(trade["distance_to_target"])),
+                "Осталось до max loss": _money(float(trade["distance_to_max_loss"])),
+                "Следующий риск пропа": _money(next_prop_risk),
+                "Следующий риск личного": _money(next_personal_risk),
+                "Баланс личного после Win": _money(current_personal_balance - next_personal_risk),
+                "Баланс личного после Loss": _money(current_personal_balance + next_personal_risk),
             }
-            for row in stage_plan.rows
         ]
     )
-    st.dataframe(plan_df, use_container_width=True, hide_index=True)
+    st.dataframe(deal_table, use_container_width=True, hide_index=True)
 
-    if stage_plan.feasible_with_initial_deposit:
-        st.success(
-            "Эта модель помещается в текущий личный депозит на пути до первой выплаты. "
-            f"Если все стадии будут пройдены, расчетный остаток личного счета: "
-            f"${stage_plan.personal_balance_at_first_payout_path:,.2f}."
+    payout_profit = current_prop_pnl if stage_key == "funded" else prop_firm.funded.profit_target_for_first_payout
+    payout = calculate_funded_payout_preview(
+        config=prop_firm,
+        initial_personal_balance=initial_personal_balance,
+        prop_risk_percent=prop_risk_percent,
+        funded_profit=payout_profit,
+        mode=coverage_mode,
+        hedge_funded=hedge_funded,
+    )
+    payout_1, payout_2, payout_3 = st.columns(3)
+    payout_1.metric("Профит на funded", _money(payout["Профит на funded, $"]))
+    payout_2.metric("К выплате после сплита", _money(payout["К выплате после сплита, $"]))
+    payout_3.metric("Чистыми", _money(payout["Чистыми после личных затрат, $"]))
+
+    if not hedge_funded:
+        st.caption("Funded не хеджируется: личный счет фиксируется, а чистыми считается payout минус затраты на challenge и fee.")
+
+    with st.expander("План по стадиям", expanded=False):
+        plan_df = pd.DataFrame(
+            [
+                {
+                    "Стадия": row.stage_name,
+                    "Старт личного": _money(row.starting_personal_balance),
+                    "Риск личного": _money(row.required_personal_risk),
+                    "Цель": _money(row.profit_target),
+                    "Max loss": _money(row.max_loss),
+                    "Баланс после прохода": _money(row.personal_balance_after_stage_passed),
+                    "Баланс при потере пропа": _money(row.personal_balance_if_stage_failed),
+                }
+                for row in stage_plan.rows
+            ]
         )
-    else:
-        st.error(
-            "Строгая модель не помещается в текущий личный депозит. "
-            f"Если проп пройдет все стадии до первой выплаты, личный счет уйдет до "
-            f"${stage_plan.personal_balance_at_first_payout_path:,.2f}. "
-            "Это означает, что одновременно гарантировать рост депозита на цену челленджа "
-            "при любом вылете и не превысить депозит при успешном пути нельзя с этими параметрами."
-        )
+        st.dataframe(plan_df, use_container_width=True, hide_index=True)
 
+
+def _render_monte_carlo(st, prop_firm: PropFirmConfig, initial_personal_balance: float, prop_risk_percent: float) -> None:
     st.write(
-        "Ключевая формула: если проп от текущей точки до max loss должен потерять `N` стопов, "
-        "то личный риск на сделку равен требуемому покрытию, деленному на `N`."
+        "Monte Carlo генерирует много случайных Win/Loss-путей по заданному winrate и показывает, как часто модель доходит до выплаты, теряет проп, хватает ли личного счета и какой денежный результат."
     )
-
-    st.subheader("3. Инструкция для открытия сделки")
-    st.write(
-        "Эту таблицу можно читать практически: нашла текущую стадию, смотришь риск пропа и ставишь "
-        "соответствующий риск на личном счете. Направление всегда противоположное: если на пропе Long, "
-        "на личном Short; если на пропе Short, на личном Long."
-    )
-    instruction_df = pd.DataFrame(dealing_instruction)
-    st.dataframe(instruction_df, use_container_width=True, hide_index=True)
-
-    strategy_name = st.sidebar.selectbox(
-        "Дополнительная исследовательская модель",
-        ["Зональная", "Непрерывная", "Фиксированная"],
-    )
-    win_probability = st.sidebar.slider("Вероятность Win", min_value=0.0, max_value=1.0, value=0.55, step=0.01)
-    runs = st.sidebar.number_input("Количество симуляций", min_value=1, value=1000, step=100)
-    max_trades = st.sidebar.number_input("Максимум сделок в цикле", min_value=1, value=100, step=10)
-    seed = st.sidebar.number_input("Seed", value=42, step=1)
+    col_1, col_2, col_3, col_4 = st.columns(4)
+    strategy_name = col_1.selectbox("Стратегия", ["Зональная", "Непрерывная", "Фиксированная"])
+    win_probability = col_2.slider("Winrate", min_value=0.0, max_value=1.0, value=0.55, step=0.01)
+    runs = col_3.number_input("Симуляций", min_value=1, value=1000, step=100)
+    max_trades = col_4.number_input("Сделок в цикле", min_value=1, value=100, step=10)
+    seed = st.number_input("Seed", value=42, step=1)
 
     if strategy_name == "Фиксированная":
-        fixed_risk = st.sidebar.number_input("Фиксированный риск личного счета, $", value=20.0, step=5.0)
-        strategy = FixedPersonalRiskStrategy(risk_amount=fixed_risk)
+        strategy = FixedPersonalRiskStrategy(risk_amount=st.number_input("Фиксированный риск личного, $", value=20.0, step=5.0))
     elif strategy_name == "Непрерывная":
         strategy = ContinuousPersonalRiskStrategy(
-            min_multiplier=st.sidebar.number_input("Минимум личного риска от риска пропа", value=0.01, step=0.01),
-            max_multiplier=st.sidebar.number_input("Максимум личного риска от риска пропа", value=0.08, step=0.01),
-            funded_multiplier=st.sidebar.number_input("Риск на funded от риска пропа", value=0.0, step=0.01),
+            min_multiplier=st.number_input("Минимум личного риска от пропа", value=0.01, step=0.01),
+            max_multiplier=st.number_input("Максимум личного риска от пропа", value=0.08, step=0.01),
+            funded_multiplier=st.number_input("Funded: доля риска", value=0.0, step=0.01),
         )
     else:
         strategy = ZonedPersonalRiskStrategy(
-            near_loss_multiplier=st.sidebar.number_input("Около max loss: доля от риска пропа", value=0.08, step=0.01),
-            mid_multiplier=st.sidebar.number_input("Середина этапа: доля от риска пропа", value=0.04, step=0.01),
-            near_target_multiplier=st.sidebar.number_input("Около цели: доля от риска пропа", value=0.01, step=0.01),
-            funded_multiplier=st.sidebar.number_input("Funded: доля от риска пропа", value=0.0, step=0.01),
+            near_loss_multiplier=st.number_input("Около max loss: доля риска", value=0.08, step=0.01),
+            mid_multiplier=st.number_input("Середина стадии: доля риска", value=0.04, step=0.01),
+            near_target_multiplier=st.number_input("Около цели: доля риска", value=0.01, step=0.01),
+            funded_multiplier=st.number_input("Funded: доля риска", value=0.0, step=0.01),
         )
 
-    selected_stage_key = st.selectbox("Стадия проп-счета", list(stage_options.keys()), format_func=stage_options.get)
-    curve_rows = build_risk_curve(
-        config=prop_firm,
-        strategy=strategy,
-        stage_key=selected_stage_key,
-        personal_balance=initial_personal_balance,
-        prop_risk_percent=prop_risk_percent,
-        points=81,
-    )
-    curve_df = pd.DataFrame(curve_rows)
     prop_risk_amount = prop_firm.nominal_balance * prop_risk_percent / 100
-
-    st.subheader("5. График риска внутри выбранной стадии")
-    st.write(
-        "Этот график нужен для ориентира внутри стадии: где проп сейчас находится относительно цели и max loss. "
-        "Он показывает риск выбранной исследовательской модели, а таблица выше показывает автоматический "
-        "страховой расчет по этапам."
-    )
-
-    col_a, col_b, col_c = st.columns(3)
-    col_a.metric("Номинал проп-счета", f"${prop_firm.nominal_balance:,.0f}")
-    col_b.metric("Риск пропа на сделку", f"${prop_risk_amount:,.0f}")
-    col_c.metric("Цена нового челленджа", f"${prop_firm.challenge_fee:,.0f}")
-
-    chart_df = curve_df.set_index("PnL пропа, $")[["Риск личного счета, $"]]
-    st.line_chart(chart_df)
-
-    min_pnl = float(curve_df["PnL пропа, $"].min())
-    max_pnl = float(curve_df["PnL пропа, $"].max())
-    current_pnl = st.slider("Текущий PnL пропа на этой стадии, $", min_pnl, max_pnl, 0.0, step=100.0)
-    nearest_index = (curve_df["PnL пропа, $"] - current_pnl).abs().idxmin()
-    current_row = curve_df.loc[nearest_index]
-    current_personal_risk = float(current_row["Риск личного счета, $"])
-    stops_to_cover_fee = prop_firm.challenge_fee / current_personal_risk if current_personal_risk > 0 else float("inf")
-
-    col_d, col_e, col_f = st.columns(3)
-    col_d.metric("Рекомендованный риск личного счета", f"${current_personal_risk:,.2f}")
-    col_e.metric("Это от риска пропа", f"{float(current_row['Риск личного / риск пропа, %']):.2f}%")
-    col_f.metric(
-        "Стопов пропа до покрытия челленджа",
-        "нет хеджа" if stops_to_cover_fee == float("inf") else f"{stops_to_cover_fee:.1f}",
-    )
-
-    st.dataframe(curve_df, use_container_width=True, hide_index=True)
-
     simulation = SimulationConfig(
-        prop_firm=prop_firm.__class__(
-            challenge_fee=prop_firm.challenge_fee,
-            nominal_balance=prop_firm.nominal_balance,
-            stages=prop_firm.stages,
-            funded=prop_firm.funded,
-            prop_risk_per_trade=prop_risk_amount,
-        ),
+        prop_firm=replace(prop_firm, prop_risk_per_trade=prop_risk_amount),
         initial_personal_balance=initial_personal_balance,
         win_probability=win_probability,
         max_trades_per_cycle=int(max_trades),
@@ -426,41 +467,210 @@ def main() -> None:
         seed=int(seed),
     )
 
-    st.subheader("6. Monte Carlo-проверка стратегии")
     if st.button("Запустить симуляцию", type="primary"):
         result = MonteCarloEngine().run(simulation=simulation, strategy=strategy)
         summary = result.summary
+        out_1, out_2, out_3 = st.columns(3)
+        out_1.metric("Ожидаемый итог", _money(summary.expected_real_wealth))
+        out_2.metric("Вероятность первой выплаты", f"{summary.probability_of_first_payout:.1%}")
+        out_3.metric("Провал с покрытием", f"{summary.probability_of_recoverable_failure:.1%}")
+        out_4, out_5, out_6 = st.columns(3)
+        out_4.metric("Провал без покрытия", f"{summary.probability_of_unrecoverable_failure:.1%}")
+        out_5.metric("Среднее внешнее пополнение", _money(summary.average_external_topup))
+        out_6.metric("Макс. пополнение до payout", _money(summary.max_external_topup_before_payout))
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Ожидаемое итоговое богатство", f"${summary.expected_real_wealth:,.2f}")
-        col2.metric("Вероятность первой выплаты", f"{summary.probability_of_first_payout:.1%}")
-        col3.metric("Провал с покрытием нового челленджа", f"{summary.probability_of_recoverable_failure:.1%}")
-
-        col4, col5, col6 = st.columns(3)
-        col4.metric("Провал без покрытия челленджа", f"{summary.probability_of_unrecoverable_failure:.1%}")
-        col5.metric("Среднее внешнее пополнение", f"${summary.average_external_topup:,.2f}")
-        col6.metric("Максимальное внешнее пополнение", f"${summary.max_external_topup_before_payout:,.2f}")
-
-    with st.expander("Поиск лучшего фиксированного риска"):
-        amounts_text = st.text_input("Варианты риска личного счета, $", "0,10,20,40,80")
+    with st.expander("Поиск лучшего фиксированного риска", expanded=False):
+        amounts_text = st.text_input("Варианты риска личного, $", "0,10,20,40,80")
         if st.button("Найти лучший фиксированный риск"):
             amounts = [float(item.strip()) for item in amounts_text.split(",") if item.strip()]
             optimization = GridSearchOptimizer(engine=MonteCarloEngine()).optimize_fixed_risk(
                 simulation=simulation,
                 risk_amounts=amounts,
             )
-            st.write(
+            st.dataframe(
                 [
                     {
-                        "Риск личного счета, $": candidate.risk_amount,
-                        "Ожидаемое итоговое богатство": candidate.summary.expected_real_wealth,
-                        "Вероятность первой выплаты": candidate.summary.probability_of_first_payout,
-                        "Провал с покрытием челленджа": candidate.summary.probability_of_recoverable_failure,
+                        "Риск личного": _money(candidate.risk_amount),
+                        "Ожидаемый итог": _money(candidate.summary.expected_real_wealth),
+                        "Вероятность payout": f"{candidate.summary.probability_of_first_payout:.1%}",
                     }
                     for candidate in optimization.candidates
-                ]
+                ],
+                use_container_width=True,
+                hide_index=True,
             )
-            st.success(f"Лучший фиксированный риск: ${optimization.best.risk_amount:,.2f}")
+            st.success(f"Лучший риск: {_money(optimization.best.risk_amount)}")
+
+
+def _render_research(
+    st,
+    pd,
+    prop_firm: PropFirmConfig,
+    stage_options: dict[str, str],
+    initial_personal_balance: float,
+    prop_risk_percent: float,
+    coverage_mode: CoverageMode,
+    hedge_funded: bool,
+) -> None:
+    stage_key = st.selectbox("Стадия для исследования", list(stage_options.keys()), format_func=stage_options.get)
+    selected_stage = prop_firm.funded if stage_key == "funded" else prop_firm.stages[int(stage_key.replace("phase_", "")) - 1]
+    min_pnl = -selected_stage.max_loss
+    max_pnl = selected_stage.profit_target_for_first_payout if stage_key == "funded" else selected_stage.profit_target
+    points = st.slider("Количество точек", min_value=5, max_value=101, value=21, step=2)
+
+    rows = []
+    for index in range(points):
+        pnl = min_pnl + (max_pnl - min_pnl) * index / (points - 1)
+        balance_state = calculate_personal_balance_from_prop_pnl(
+            prop_firm,
+            stage_key,
+            pnl,
+            initial_personal_balance,
+            prop_risk_percent,
+            coverage_mode,
+        )
+        current_personal_balance = float(balance_state["Текущий баланс личного счета, $"])
+        trade = calculate_personal_risk_for_trade(
+            prop_firm,
+            stage_key,
+            pnl,
+            initial_personal_balance,
+            current_personal_balance,
+            prop_risk_percent,
+            coverage_mode,
+            max_risk_per_trade=_stage_max_risk(prop_firm, stage_key),
+            daily_loss_limit=_stage_daily_loss(prop_firm, stage_key),
+            hedge_funded=hedge_funded,
+        )
+        rows.append(
+            {
+                "PnL пропа": _money(pnl),
+                "Осталось до цели": _money(float(trade["distance_to_target"])),
+                "Осталось до max loss": _money(float(trade["distance_to_max_loss"])),
+                "Следующий риск пропа": _money(float(trade["Риск пропа, $"])),
+                "Следующий риск личного": _money(float(trade["Риск личного, $"])),
+                "Баланс после Win": _money(current_personal_balance - float(trade["Риск личного, $"])),
+                "Баланс после Loss": _money(current_personal_balance + float(trade["Риск личного, $"])),
+            }
+        )
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    with st.expander("Старый график риска", expanded=False):
+        strategy = ZonedPersonalRiskStrategy()
+        curve_df = pd.DataFrame(
+            build_risk_curve(
+                config=prop_firm,
+                strategy=strategy,
+                stage_key=stage_key,
+                personal_balance=initial_personal_balance,
+                prop_risk_percent=prop_risk_percent,
+                points=81,
+            )
+        )
+        st.line_chart(curve_df.set_index("PnL пропа, $")[["Риск личного счета, $"]])
+        st.dataframe(curve_df, use_container_width=True, hide_index=True)
+
+    with st.expander("Инструкция по стадиям", expanded=False):
+        instruction = build_dealing_instruction(prop_firm, initial_personal_balance, prop_risk_percent, coverage_mode)
+        st.dataframe(pd.DataFrame(instruction), use_container_width=True, hide_index=True)
+
+
+def _render_instant_accounts(st) -> None:
+    col_1, col_2, col_3 = st.columns(3)
+    account_size = col_1.number_input(
+        "Размер instant-счета, $", value=50_000.0, min_value=1_000.0, step=1_000.0, key="instant_account_size"
+    )
+    max_loss = col_2.number_input("Max loss, $", value=2_500.0, min_value=1.0, step=100.0, key="instant_max_loss")
+    daily_loss = col_3.number_input("Daily loss, $", value=1_250.0, min_value=1.0, step=100.0, key="instant_daily_loss")
+    drawdown_mode = st.radio("Drawdown", ["static", "trailing"], horizontal=True, key="instant_drawdown")
+    consistency_rule = st.number_input(
+        "Consistency rule, %", value=30.0, min_value=0.0, max_value=100.0, step=1.0, key="instant_consistency"
+    )
+    split = st.number_input("Profit split, %", value=80.0, min_value=1.0, max_value=100.0, step=1.0, key="instant_split")
+    target_enabled = st.checkbox("Profit target", value=False, key="instant_target_enabled")
+    target = st.number_input(
+        "Profit target, $", value=2_000.0, min_value=1.0, step=100.0, disabled=not target_enabled, key="instant_target"
+    )
+    current_profit = st.number_input("Текущий profit, $", value=0.0, step=100.0, key="instant_current_profit")
+
+    payout = max(0.0, current_profit) * split / 100
+    st.metric("К выплате", _money(payout))
+    if target_enabled:
+        remaining = max(0.0, target - current_profit)
+        st.metric("Осталось до цели", _money(remaining))
+    st.caption(
+        f"Instant = сразу funded. В v1 static drawdown считается как обычный max loss; {drawdown_mode} и consistency {consistency_rule:.0f}% отображаются как ограничения для анализа."
+    )
+
+
+def _render_prop_vs_prop(st, prop_firm: PropFirmConfig) -> None:
+    col_1, col_2, col_3 = st.columns(3)
+    prop_count = col_1.number_input("Количество пропов", value=2, min_value=2, step=1, key="pvp_prop_count")
+    fee_per_prop = col_2.number_input(
+        "Fee на один проп, $", value=prop_firm.challenge_fee, min_value=0.0, step=10.0, key="pvp_fee"
+    )
+    expected_payout = col_3.number_input(
+        "Ожидаемый funded profit, $",
+        value=prop_firm.funded.profit_target_for_first_payout,
+        min_value=0.0,
+        step=500.0,
+        key="pvp_expected_payout",
+    )
+    split = st.number_input(
+        "Profit split, %", value=prop_firm.funded.trader_split * 100, min_value=1.0, max_value=100.0, step=1.0, key="pvp_split"
+    )
+    gross_payout = expected_payout * split / 100
+    fees = prop_count * fee_per_prop
+    net = gross_payout - fees
+    st.metric("Потенциально к выплате", _money(gross_payout))
+    st.metric("Fees", _money(fees))
+    st.metric("После fees", _money(net))
+    st.write(
+        "Базовая формула режима: funded payout после split минус fees всех купленных пропов. Полная версия должна отдельно учитывать вероятность прохождения каждого пропа."
+    )
+
+
+def _render_prop_selection_principles(st) -> None:
+    st.markdown(
+        """
+- Лучшее соотношение profit target / max loss снижает число нужных Win до прохода.
+- Чем ниже target относительно drawdown, тем легче дойти до funded при том же риске.
+- Более высокий payout split напрямую повышает net payout.
+- Instant быстрее, но обычно дороже и жестче по drawdown; 1 phase проще по пути, 2 phase дольше, но часто дешевле.
+- Trailing drawdown хуже static, потому что лимит двигается за максимальным equity.
+- Daily loss важен, потому что он может остановить сделку раньше общего max loss.
+- Max risk per trade должен быть совместим с остатком до цели: если до цели осталось $300, следующая сделка не должна рисковать $1,900.
+"""
+    )
+
+
+def _stage_max_risk(config: PropFirmConfig, stage_key: str) -> float:
+    if stage_key == "funded":
+        return float(config.funded.max_risk_per_trade or config.prop_risk_per_trade)
+    stage = config.stages[int(stage_key.replace("phase_", "")) - 1]
+    return float(stage.max_risk_per_trade or config.prop_risk_per_trade)
+
+
+def _stage_daily_loss(config: PropFirmConfig, stage_key: str) -> float | None:
+    if stage_key == "funded":
+        return config.funded.daily_loss
+    return config.stages[int(stage_key.replace("phase_", "")) - 1].daily_loss
+
+
+def _money(value: float) -> str:
+    return f"${value:,.2f}"
+
+
+def _percent(value: float) -> str:
+    return f"{value:.2f}%"
+
+
+def _to_amount(value: float, mode: str, nominal_balance: float) -> float:
+    return value if mode == "amount" else nominal_balance * value / 100
+
+
+def _from_amount(value: float, mode: str, nominal_balance: float) -> float:
+    return value if mode == "amount" else value / nominal_balance * 100
 
 
 if __name__ == "__main__":

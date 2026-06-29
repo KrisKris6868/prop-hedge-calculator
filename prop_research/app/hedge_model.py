@@ -51,6 +51,20 @@ class FreePropRequirement:
     total_success_path_personal_loss: float
 
 
+def calculate_effective_prop_risk(
+    max_risk_per_trade: float,
+    distance_to_target: float | None,
+    distance_to_max_loss: float,
+    daily_loss_limit: float | None = None,
+) -> float:
+    limits = [max(0.0, max_risk_per_trade), max(0.0, distance_to_max_loss)]
+    if distance_to_target is not None:
+        limits.append(max(0.0, distance_to_target))
+    if daily_loss_limit is not None:
+        limits.append(max(0.0, daily_loss_limit))
+    return round(min(limits), 2)
+
+
 def minimum_personal_deposit_for_strict_free_prop(
     config: PropFirmConfig,
     prop_risk_percent: float,
@@ -262,30 +276,73 @@ def calculate_personal_risk_for_trade(
     current_personal_balance: float,
     prop_risk_percent: float,
     mode: CoverageMode,
+    max_risk_per_trade: float | None = None,
+    target_enabled: bool = True,
+    daily_loss_limit: float | None = None,
+    hedge_funded: bool = True,
 ) -> dict[str, float | str]:
-    prop_risk_amount = config.nominal_balance * prop_risk_percent / 100
-    stage_name, max_loss = _calculator_stage(stage_key, config)
+    full_prop_risk_amount = config.nominal_balance * prop_risk_percent / 100
+    stage_name, max_loss, profit_target = _calculator_stage(stage_key, config)
+    configured_max_risk = _configured_max_risk_per_trade(config, stage_key)
+    max_trade_risk = min(
+        limit
+        for limit in [full_prop_risk_amount, max_risk_per_trade, configured_max_risk]
+        if limit is not None
+    )
+    distance_to_target = max(0.0, profit_target - current_prop_pnl) if target_enabled else None
+    distance_to_max_loss = max(0.0, current_prop_pnl + max_loss)
+    effective_prop_risk_amount = calculate_effective_prop_risk(
+        max_risk_per_trade=max_trade_risk,
+        distance_to_target=distance_to_target,
+        distance_to_max_loss=distance_to_max_loss,
+        daily_loss_limit=daily_loss_limit,
+    )
     requirement = required_risk_at_point(
         challenge_fee=config.challenge_fee,
         initial_personal_balance=initial_personal_balance,
         current_personal_balance=current_personal_balance,
         current_prop_pnl=current_prop_pnl,
         max_loss=max_loss,
-        prop_risk_amount=prop_risk_amount,
+        prop_risk_amount=effective_prop_risk_amount,
         mode=mode,
+    )
+    personal_risk = 0.0 if stage_key == "funded" and not hedge_funded else requirement.required_personal_risk
+    personal_risk_percent_of_prop = (
+        round(personal_risk / effective_prop_risk_amount * 100, 2)
+        if effective_prop_risk_amount > 0
+        else 0.0
+    )
+    prop_to_personal_risk_multiple = (
+        round(effective_prop_risk_amount / personal_risk, 2)
+        if personal_risk > 0
+        else 0.0
+    )
+    target_status = (
+        "Цель отключена"
+        if not target_enabled
+        else "Цель достигнута"
+        if distance_to_target == 0
+        else f"До цели осталось ${distance_to_target:,.2f}"
     )
     return {
         "Стадия": stage_name,
         "Текущий PnL пропа, $": round(current_prop_pnl, 2),
         "Риск пропа, %": round(prop_risk_percent, 2),
-        "Риск пропа, $": round(prop_risk_amount, 2),
-        "Риск личного, $": requirement.required_personal_risk,
+        "Риск пропа, $": round(effective_prop_risk_amount, 2),
+        "Риск личного, $": personal_risk,
         "Loss до потери пропа": requirement.loss_trades_to_failure,
         "Цель личного счета при потере пропа, $": requirement.target_personal_balance_at_failure,
         "Ожидаемый личный счет при потере пропа, $": round(
             current_personal_balance + requirement.personal_profit_if_failure,
             2,
         ),
+        "full_prop_risk_amount": round(full_prop_risk_amount, 2),
+        "effective_prop_risk_amount": round(effective_prop_risk_amount, 2),
+        "distance_to_target": round(distance_to_target, 2) if distance_to_target is not None else 0.0,
+        "distance_to_max_loss": round(distance_to_max_loss, 2),
+        "personal_risk_percent_of_prop": personal_risk_percent_of_prop,
+        "prop_to_personal_risk_multiple": prop_to_personal_risk_multiple,
+        "target_status": target_status,
         "Если на пропе Long": "на личном Short",
         "Если на пропе Short": "на личном Long",
     }
@@ -297,6 +354,7 @@ def calculate_funded_payout_preview(
     prop_risk_percent: float,
     funded_profit: float,
     mode: CoverageMode,
+    hedge_funded: bool = True,
 ) -> dict[str, float]:
     plan = build_stage_plan(
         config=config,
@@ -308,7 +366,7 @@ def calculate_funded_payout_preview(
     prop_risk_amount = plan.prop_risk_amount
     funded_win_units = max(0.0, funded_profit) / prop_risk_amount if prop_risk_amount > 0 else 0.0
     challenge_stage_costs = sum(row.personal_loss_if_stage_passed for row in plan.rows[:-1])
-    funded_cost = funded_win_units * funded_row.required_personal_risk
+    funded_cost = funded_win_units * funded_row.required_personal_risk if hedge_funded else 0.0
     personal_costs_to_current_profit = challenge_stage_costs + funded_cost
     payout_after_split = max(0.0, funded_profit) * config.funded.trader_split
     return {
@@ -327,12 +385,19 @@ def _stage_plan_row_for_key(plan: StagePlan, stage_key: str) -> StagePlanRow:
     return plan.rows[stage_number - 1]
 
 
-def _calculator_stage(stage_key: str, config: PropFirmConfig) -> tuple[str, float]:
+def _calculator_stage(stage_key: str, config: PropFirmConfig) -> tuple[str, float, float]:
     if stage_key == "funded":
-        return "Funded до первой выплаты", config.funded.max_loss
+        return "Funded до первой выплаты", config.funded.max_loss, config.funded.profit_target_for_first_payout
     stage_number = int(stage_key.replace("phase_", ""))
     stage = config.stages[stage_number - 1]
-    return f"Этап {stage_number}: {stage.name}", stage.max_loss
+    return f"Этап {stage_number}: {stage.name}", stage.max_loss, stage.profit_target
+
+
+def _configured_max_risk_per_trade(config: PropFirmConfig, stage_key: str) -> float | None:
+    if stage_key == "funded":
+        return getattr(config.funded, "max_risk_per_trade", None)
+    stage_number = int(stage_key.replace("phase_", ""))
+    return getattr(config.stages[stage_number - 1], "max_risk_per_trade", None)
 
 
 def _target_balance(challenge_fee: float, initial_personal_balance: float, mode: CoverageMode) -> float:

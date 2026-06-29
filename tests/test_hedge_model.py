@@ -2,6 +2,7 @@ from prop_research.app.hedge_model import (
     CoverageMode,
     build_dealing_instruction,
     build_stage_plan,
+    calculate_effective_prop_risk,
     calculate_personal_balance_from_prop_pnl,
     calculate_personal_risk_for_trade,
     calculate_funded_payout_preview,
@@ -237,3 +238,49 @@ def test_funded_payout_preview_uses_current_funded_profit() -> None:
     assert preview["К выплате после сплита, $"] == 800.0
     assert preview["Затраты личного счета до текущего funded profit, $"] == 489.06
     assert preview["Чистыми после личных затрат, $"] == 310.94
+
+
+def test_effective_prop_risk_caps_trade_by_remaining_target() -> None:
+    assert calculate_effective_prop_risk(
+        max_risk_per_trade=1_900.0,
+        distance_to_target=300.0,
+        distance_to_max_loss=13_700.0,
+    ) == 300.0
+
+
+def test_effective_prop_risk_ignores_target_when_target_is_disabled() -> None:
+    assert calculate_effective_prop_risk(
+        max_risk_per_trade=1_900.0,
+        distance_to_target=None,
+        distance_to_max_loss=13_700.0,
+    ) == 1_900.0
+
+
+def test_trade_calculator_uses_effective_risk_near_profit_target() -> None:
+    result = calculate_personal_risk_for_trade(
+        config=make_config(),
+        stage_key="phase_1",
+        current_prop_pnl=5_700.0,
+        initial_personal_balance=200.0,
+        current_personal_balance=200.0,
+        prop_risk_percent=1.9,
+        mode=CoverageMode.GROW_DEPOSIT_BY_FEE,
+    )
+
+    assert result["full_prop_risk_amount"] == 1900.0
+    assert result["effective_prop_risk_amount"] == 300.0
+    assert result["distance_to_target"] == 300.0
+
+
+def test_funded_payout_preview_can_exclude_funded_hedge_costs() -> None:
+    preview = calculate_funded_payout_preview(
+        config=make_config(),
+        initial_personal_balance=200.0,
+        prop_risk_percent=1.0,
+        funded_profit=1_000.0,
+        mode=CoverageMode.GROW_DEPOSIT_BY_FEE,
+        hedge_funded=False,
+    )
+
+    assert preview["Затраты личного счета до текущего funded profit, $"] == 412.5
+    assert preview["Чистыми после личных затрат, $"] == 387.5

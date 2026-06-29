@@ -31,3 +31,48 @@ def test_load_prop_firm_config_from_json(tmp_path) -> None:
     assert config.nominal_balance == 100000
     assert len(config.stages) == 2
     assert config.funded.trader_split == 0.8
+
+
+def test_load_optional_risk_limits_from_json(tmp_path) -> None:
+    config_path = tmp_path / "firm.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "challenge_fee": 200,
+                "nominal_balance": 100000,
+                "prop_risk_per_trade": 1000,
+                "stages": [
+                    {
+                        "name": "phase_1",
+                        "profit_target": 6000,
+                        "max_loss": 8000,
+                        "max_loss_mode": "amount",
+                        "daily_loss": 4000,
+                        "daily_loss_mode": "amount",
+                        "max_risk_per_trade": 1900,
+                        "drawdown_mode": "static",
+                    }
+                ],
+                "funded": {
+                    "profit_target_for_first_payout": 5000,
+                    "max_loss": 5000,
+                    "max_loss_mode": "percent",
+                    "daily_loss": 2500,
+                    "daily_loss_mode": "amount",
+                    "max_risk_per_trade": 1000,
+                    "trader_split": 0.8,
+                    "drawdown_mode": "trailing",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_prop_firm_config(config_path)
+
+    assert config.stages[0].max_risk_per_trade == 1900
+    assert config.stages[0].daily_loss == 4000
+    assert config.stages[0].drawdown_mode == "static"
+    assert config.funded.max_loss_mode == "percent"
+    assert config.funded.max_risk_per_trade == 1000
+    assert config.funded.drawdown_mode == "trailing"
