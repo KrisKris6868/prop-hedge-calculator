@@ -1,0 +1,17 @@
+[project]
+name = "prop-research"
+version = "0.1.0"
+description = "Monte Carlo research platform for prop-firm capital management."
+requires-python = ">=3.11"
+dependencies = [
+  "streamlit>=1.36",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
