@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from prop_research.app.hedge_model import (
@@ -32,6 +33,20 @@ def main() -> None:
 
     config_path = st.sidebar.text_input("Файл правил проп-фирмы", "configs/example_prop_firm.json")
     prop_firm = load_prop_firm_config(Path(config_path))
+
+    st.sidebar.subheader("Цена проп-счета")
+    challenge_fee = st.sidebar.number_input("Цена челленджа, $", value=prop_firm.challenge_fee, min_value=1.0, step=10.0)
+    nominal_balance = st.sidebar.number_input(
+        "Размер проп-счета, $",
+        value=prop_firm.nominal_balance,
+        min_value=1_000.0,
+        step=1_000.0,
+    )
+    prop_firm = replace(
+        prop_firm,
+        challenge_fee=float(challenge_fee),
+        nominal_balance=float(nominal_balance),
+    )
 
     initial_personal_balance = st.sidebar.number_input("Баланс личного счета, $", value=200.0, step=10.0)
     prop_risk_percent = st.sidebar.number_input("Риск проп-счета на сделку, %", value=1.0, step=0.1)
