@@ -41,48 +41,48 @@ def main() -> None:
     with st.sidebar.expander("Расширенные настройки", expanded=False):
         config_path = st.text_input("Файл правил", "configs/example_prop_firm.json")
 
+    settings_summary = st.sidebar.container()
     prop_firm = load_prop_firm_config(Path(config_path))
     prop_firm = _sidebar_rules(st, prop_firm)
+    funded_target_enabled = bool(st.session_state.get("funded_profit_target_enabled", True))
 
-    max_challenge_risk = max(_field(stage, "max_risk_per_trade", None) or prop_firm.nominal_balance for stage in prop_firm.stages)
-    max_funded_risk = _field(prop_firm.funded, "max_risk_per_trade", None) or prop_firm.nominal_balance
-    max_prop_risk_percent = max(max_challenge_risk, max_funded_risk) / prop_firm.nominal_balance * 100
-
-    st.sidebar.subheader("Риск и личный счет")
-    prop_risk_percent = st.sidebar.number_input(
-        "Риск пропа до лимитов, %",
-        value=min(1.0, float(max_prop_risk_percent)),
-        min_value=0.01,
-        max_value=float(max_prop_risk_percent),
-        step=0.1,
-    )
+    prop_risk_percent = _default_prop_risk_percent(prop_firm)
     recommended_balance = minimum_personal_deposit_for_strict_free_prop(
         config=prop_firm,
         prop_risk_percent=prop_risk_percent,
     ).minimum_personal_deposit
-    st.sidebar.metric("Рекомендуемый личный депозит", _money(recommended_balance))
-    use_recommended_balance = st.sidebar.checkbox("Использовать рекомендуемый депозит", value=True)
-    custom_personal_balance = st.sidebar.number_input(
-        "Начальный личный депозит, $",
-        value=float(recommended_balance),
-        min_value=0.0,
-        step=10.0,
-        disabled=use_recommended_balance,
-    )
-    initial_personal_balance = float(recommended_balance if use_recommended_balance else custom_personal_balance)
-    coverage_label = st.sidebar.radio(
-        "При потере пропа",
-        [
-            "Личный депозит растет на цену челленджа",
-            "На личном хватает на новый челлендж",
-        ],
-    )
-    coverage_mode = (
-        CoverageMode.GROW_DEPOSIT_BY_FEE
-        if coverage_label == "Личный депозит растет на цену челленджа"
-        else CoverageMode.BALANCE_COVERS_NEXT_CHALLENGE
-    )
-    hedge_funded = not st.sidebar.checkbox("Не хеджировать funded", value=False)
+    with settings_summary:
+        st.subheader("Риск и личный счет")
+        st.metric("Риск пропа по умолчанию", _money(_stage_max_risk(prop_firm, "phase_1")))
+        st.caption("Берется из max risk per trade первой стадии. В калькуляторе выбранная стадия берет свой max risk.")
+        st.metric("Рекомендуемый личный депозит", _money(recommended_balance))
+        use_recommended_balance = st.checkbox("Использовать рекомендуемый депозит", value=True)
+        if use_recommended_balance:
+            initial_personal_balance = float(recommended_balance)
+            st.caption(f"Начальный личный депозит: {_money(initial_personal_balance)}")
+        else:
+            initial_personal_balance = float(
+                st.number_input(
+                    "Начальный личный депозит, $",
+                    value=float(recommended_balance),
+                    min_value=0.0,
+                    step=10.0,
+                    key="initial_personal_balance_custom",
+                )
+            )
+        coverage_label = st.radio(
+            "При потере пропа",
+            [
+                "Личный депозит растет на цену челленджа",
+                "На личном хватает на новый челлендж",
+            ],
+        )
+        coverage_mode = (
+            CoverageMode.GROW_DEPOSIT_BY_FEE
+            if coverage_label == "Личный депозит растет на цену челленджа"
+            else CoverageMode.BALANCE_COVERS_NEXT_CHALLENGE
+        )
+        hedge_funded = not st.checkbox("Не хеджировать funded", value=False)
 
     with st.sidebar.expander("Новости", expanded=False):
         consider_news = st.checkbox("Учитывать новости", value=False)
@@ -115,6 +115,7 @@ def main() -> None:
             prop_risk_percent=prop_risk_percent,
             coverage_mode=coverage_mode,
             hedge_funded=hedge_funded,
+            funded_target_enabled=funded_target_enabled,
             consider_news=consider_news,
             forced_close_r=forced_close_r,
         )
@@ -137,6 +138,7 @@ def main() -> None:
             prop_risk_percent=prop_risk_percent,
             coverage_mode=coverage_mode,
             hedge_funded=hedge_funded,
+            funded_target_enabled=funded_target_enabled,
         )
 
     with instant_tab:
@@ -230,7 +232,7 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
 
     st.sidebar.subheader("Funded")
     funded = prop_firm.funded
-    funded_profit_target_enabled = st.sidebar.checkbox("Funded profit target", value=True)
+    funded_profit_target_enabled = st.sidebar.checkbox("Funded profit target", value=True, key="funded_profit_target_enabled")
     funded_profit_target = st.sidebar.number_input(
         "Funded: profit target, $",
         value=funded.profit_target_for_first_payout,
@@ -289,7 +291,12 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
         nominal_balance=float(nominal_balance),
         stages=stages,
         funded=_make_funded_config(
-            profit_target_for_first_payout=float(funded_profit_target if funded_profit_target_enabled else nominal_balance),
+            profit_target_for_first_payout=_funded_target_for_config(
+                enabled=funded_profit_target_enabled,
+                input_value=float(funded_profit_target),
+                existing_value=funded.profit_target_for_first_payout,
+                nominal_balance=float(nominal_balance),
+            ),
             max_loss=_to_amount(float(funded_max_loss), funded_max_loss_mode, float(nominal_balance)),
             trader_split=float(trader_split_percent) / 100,
             max_loss_mode=funded_max_loss_mode,
@@ -312,6 +319,7 @@ def _render_trade_calculator(
     prop_risk_percent: float,
     coverage_mode: CoverageMode,
     hedge_funded: bool,
+    funded_target_enabled: bool,
     consider_news: bool,
     forced_close_r: float,
 ) -> None:
@@ -324,20 +332,36 @@ def _render_trade_calculator(
     input_1, input_2 = st.columns(2)
     stage_key = input_1.selectbox("Текущая стадия", list(stage_options.keys()), format_func=stage_options.get)
     max_risk = _stage_max_risk(prop_firm, stage_key)
-    current_prop_pnl_abs = input_2.number_input(
+    stage_prop_risk_percent = _stage_risk_percent(prop_firm, stage_key)
+
+    if "calculator_current_prop_pnl" not in st.session_state:
+        st.session_state["calculator_current_prop_pnl"] = 0.0
+    if "calculator_is_drawdown" not in st.session_state:
+        st.session_state["calculator_is_drawdown"] = False
+
+    def sync_pnl_sign() -> None:
+        raw_value = float(st.session_state.get("calculator_current_prop_pnl", 0.0))
+        if st.session_state.get("calculator_is_drawdown", False):
+            st.session_state["calculator_current_prop_pnl"] = -abs(raw_value)
+        else:
+            st.session_state["calculator_current_prop_pnl"] = abs(raw_value)
+
+    current_prop_pnl_raw = input_2.number_input(
         "Текущий PnL пропа, $",
-        value=0.0,
         step=float(max_risk),
+        key="calculator_current_prop_pnl",
+        on_change=sync_pnl_sign,
     )
-    is_drawdown = input_2.checkbox("Это просадка", value=False)
-    current_prop_pnl = -abs(current_prop_pnl_abs) if is_drawdown else abs(current_prop_pnl_abs)
+    is_drawdown = input_2.checkbox("Это просадка", key="calculator_is_drawdown", on_change=sync_pnl_sign)
+    current_prop_pnl = float(st.session_state.get("calculator_current_prop_pnl", current_prop_pnl_raw))
+    target_enabled_for_stage = stage_key != "funded" or funded_target_enabled
 
     personal_balance_state = calculate_personal_balance_from_prop_pnl(
         config=prop_firm,
         stage_key=stage_key,
         current_prop_pnl=current_prop_pnl,
         initial_personal_balance=initial_personal_balance,
-        prop_risk_percent=prop_risk_percent,
+        prop_risk_percent=stage_prop_risk_percent,
         mode=coverage_mode,
     )
     current_personal_balance = float(personal_balance_state["Текущий баланс личного счета, $"])
@@ -351,10 +375,10 @@ def _render_trade_calculator(
         current_prop_pnl=current_prop_pnl,
         initial_personal_balance=initial_personal_balance,
         current_personal_balance=current_personal_balance,
-        prop_risk_percent=prop_risk_percent,
+        prop_risk_percent=stage_prop_risk_percent,
         mode=coverage_mode,
         max_risk_per_trade=max_risk,
-        target_enabled=True,
+        target_enabled=target_enabled_for_stage,
         daily_loss_limit=daily_loss_limit,
         hedge_funded=hedge_funded,
     )
@@ -371,10 +395,13 @@ def _render_trade_calculator(
     status_1, status_2, status_3, status_4 = st.columns(4)
     status_1.metric("Текущая стадия", stage_options[stage_key])
     status_2.metric("Авто-баланс личного", _money(current_personal_balance))
-    status_3.metric("Осталось до цели", _money(float(trade["distance_to_target"])))
+    status_3.metric("Осталось до цели", _money(float(trade["distance_to_target"])) if target_enabled_for_stage else "цель отключена")
     status_4.metric("Осталось до max loss", _money(float(trade["distance_to_max_loss"])))
 
-    st.success(str(trade["target_status"]))
+    if target_enabled_for_stage:
+        st.success(str(trade["target_status"]))
+    else:
+        st.info("Profit target на funded отключен: цель и расстояние до цели не участвуют в расчете риска.")
     if consider_news:
         st.info(f"Новости учитываются как forced close, а не как штраф. Текущий сценарий закрытия: {forced_close_r:.2f}R.")
 
@@ -384,7 +411,7 @@ def _render_trade_calculator(
         [
             {
                 "PnL пропа": _money(current_prop_pnl),
-                "Осталось до цели": _money(float(trade["distance_to_target"])),
+                "Осталось до цели": _money(float(trade["distance_to_target"])) if target_enabled_for_stage else "цель отключена",
                 "Осталось до max loss": _money(float(trade["distance_to_max_loss"])),
                 "Следующий риск пропа": _money(next_prop_risk),
                 "Следующий риск личного": _money(next_personal_risk),
@@ -395,22 +422,23 @@ def _render_trade_calculator(
     )
     st.dataframe(deal_table, use_container_width=True, hide_index=True)
 
-    payout_profit = current_prop_pnl if stage_key == "funded" else prop_firm.funded.profit_target_for_first_payout
-    payout = calculate_funded_payout_preview(
-        config=prop_firm,
-        initial_personal_balance=initial_personal_balance,
-        prop_risk_percent=prop_risk_percent,
-        funded_profit=payout_profit,
-        mode=coverage_mode,
-        hedge_funded=hedge_funded,
-    )
-    payout_1, payout_2, payout_3 = st.columns(3)
-    payout_1.metric("Профит на funded", _money(payout["Профит на funded, $"]))
-    payout_2.metric("К выплате после сплита", _money(payout["К выплате после сплита, $"]))
-    payout_3.metric("Чистыми", _money(payout["Чистыми после личных затрат, $"]))
+    if stage_key == "funded" or funded_target_enabled:
+        payout_profit = current_prop_pnl if stage_key == "funded" else prop_firm.funded.profit_target_for_first_payout
+        payout = calculate_funded_payout_preview(
+            config=prop_firm,
+            initial_personal_balance=initial_personal_balance,
+            prop_risk_percent=prop_risk_percent,
+            funded_profit=payout_profit,
+            mode=coverage_mode,
+            hedge_funded=hedge_funded,
+        )
+        payout_1, payout_2, payout_3 = st.columns(3)
+        payout_1.metric("Профит на funded", _money(payout["Профит на funded, $"]))
+        payout_2.metric("К выплате после сплита", _money(payout["К выплате после сплита, $"]))
+        payout_3.metric("Чистыми", _money(payout["Чистыми после личных затрат, $"]))
 
-    if not hedge_funded:
-        st.caption("Funded не хеджируется: личный счет фиксируется, а чистыми считается payout минус затраты на challenge и fee.")
+        if not hedge_funded:
+            st.caption("Funded не хеджируется: личный счет фиксируется, а чистыми считается payout минус затраты на challenge и fee.")
 
     with st.expander("План по стадиям", expanded=False):
         plan_df = pd.DataFrame(
@@ -511,11 +539,13 @@ def _render_research(
     prop_risk_percent: float,
     coverage_mode: CoverageMode,
     hedge_funded: bool,
+    funded_target_enabled: bool,
 ) -> None:
     stage_key = st.selectbox("Стадия для исследования", list(stage_options.keys()), format_func=stage_options.get)
     selected_stage = prop_firm.funded if stage_key == "funded" else prop_firm.stages[int(stage_key.replace("phase_", "")) - 1]
     min_pnl = -selected_stage.max_loss
     max_pnl = selected_stage.profit_target_for_first_payout if stage_key == "funded" else selected_stage.profit_target
+    target_enabled_for_stage = stage_key != "funded" or funded_target_enabled
     points = st.slider("Количество точек", min_value=5, max_value=101, value=21, step=2)
 
     rows = []
@@ -539,13 +569,14 @@ def _render_research(
             prop_risk_percent,
             coverage_mode,
             max_risk_per_trade=_stage_max_risk(prop_firm, stage_key),
+            target_enabled=target_enabled_for_stage,
             daily_loss_limit=_stage_daily_loss(prop_firm, stage_key),
             hedge_funded=hedge_funded,
         )
         rows.append(
             {
                 "PnL пропа": _money(pnl),
-                "Осталось до цели": _money(float(trade["distance_to_target"])),
+                "Осталось до цели": _money(float(trade["distance_to_target"])) if target_enabled_for_stage else "цель отключена",
                 "Осталось до max loss": _money(float(trade["distance_to_max_loss"])),
                 "Следующий риск пропа": _money(float(trade["Риск пропа, $"])),
                 "Следующий риск личного": _money(float(trade["Риск личного, $"])),
@@ -651,6 +682,14 @@ def _stage_max_risk(config: PropFirmConfig, stage_key: str) -> float:
     return float(_field(stage, "max_risk_per_trade", None) or config.prop_risk_per_trade)
 
 
+def _stage_risk_percent(config: PropFirmConfig, stage_key: str) -> float:
+    return round(_stage_max_risk(config, stage_key) / config.nominal_balance * 100, 6)
+
+
+def _default_prop_risk_percent(config: PropFirmConfig) -> float:
+    return _stage_risk_percent(config, "phase_1")
+
+
 def _stage_daily_loss(config: PropFirmConfig, stage_key: str) -> float | None:
     if stage_key == "funded":
         return _field(config.funded, "daily_loss", None)
@@ -659,6 +698,17 @@ def _stage_daily_loss(config: PropFirmConfig, stage_key: str) -> float | None:
 
 def _field(obj, name: str, default):
     return getattr(obj, name, default)
+
+
+def _funded_target_for_config(
+    enabled: bool,
+    input_value: float,
+    existing_value: float,
+    nominal_balance: float,
+) -> float:
+    if enabled:
+        return float(input_value)
+    return float(existing_value or nominal_balance)
 
 
 def _make_stage_config(**kwargs) -> StageConfig:
