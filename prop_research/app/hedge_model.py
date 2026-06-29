@@ -284,9 +284,10 @@ def calculate_personal_risk_for_trade(
     full_prop_risk_amount = config.nominal_balance * prop_risk_percent / 100
     stage_name, max_loss, profit_target = _calculator_stage(stage_key, config)
     configured_max_risk = _configured_max_risk_per_trade(config, stage_key)
+    requested_max_risk = max_risk_per_trade if max_risk_per_trade is not None else configured_max_risk
     max_trade_risk = min(
         limit
-        for limit in [full_prop_risk_amount, max_risk_per_trade, configured_max_risk]
+        for limit in [full_prop_risk_amount, requested_max_risk]
         if limit is not None
     )
     distance_to_target = max(0.0, profit_target - current_prop_pnl) if target_enabled else None

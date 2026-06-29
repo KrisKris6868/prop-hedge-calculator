@@ -272,6 +272,32 @@ def test_trade_calculator_uses_effective_risk_near_profit_target() -> None:
     assert result["distance_to_target"] == 300.0
 
 
+def test_trade_calculator_explicit_trade_risk_overrides_stage_default() -> None:
+    config = PropFirmConfig(
+        challenge_fee=200.0,
+        nominal_balance=100_000.0,
+        stages=[
+            StageConfig(name="phase_1", profit_target=6_000.0, max_loss=8_000.0, max_risk_per_trade=1_900.0),
+        ],
+        funded=FundedConfig(profit_target_for_first_payout=5_000.0, max_loss=8_000.0, trader_split=0.8),
+        prop_risk_per_trade=1_000.0,
+    )
+
+    result = calculate_personal_risk_for_trade(
+        config=config,
+        stage_key="phase_1",
+        current_prop_pnl=0.0,
+        initial_personal_balance=200.0,
+        current_personal_balance=200.0,
+        prop_risk_percent=3.0,
+        mode=CoverageMode.GROW_DEPOSIT_BY_FEE,
+        max_risk_per_trade=3_000.0,
+    )
+
+    assert result["Риск пропа, $"] == 3_000.0
+    assert result["effective_prop_risk_amount"] == 3_000.0
+
+
 def test_funded_payout_preview_can_exclude_funded_hedge_costs() -> None:
     preview = calculate_funded_payout_preview(
         config=make_config(),

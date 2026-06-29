@@ -1,7 +1,9 @@
 from prop_research.app.streamlit_app import (
     _default_prop_risk_percent,
     _funded_target_for_config,
+    _risk_percent_from_amount,
     _stage_risk_percent,
+    _target_distance_display,
 )
 from prop_research.domain.config import FundedConfig, PropFirmConfig, StageConfig
 
@@ -39,3 +41,12 @@ def test_disabled_funded_target_keeps_real_config_value_instead_of_nominal_balan
         existing_value=5_000.0,
         nominal_balance=100_000.0,
     ) == 5_000.0
+
+
+def test_risk_percent_from_amount_uses_current_trade_risk_amount() -> None:
+    assert _risk_percent_from_amount(3_000.0, 100_000.0) == 3.0
+
+
+def test_target_distance_display_is_blank_when_target_is_disabled() -> None:
+    assert _target_distance_display(enabled=False, distance=1_234.0) == ""
+    assert _target_distance_display(enabled=True, distance=1_234.0) == "$1,234.00"

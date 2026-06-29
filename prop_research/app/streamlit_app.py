@@ -329,10 +329,31 @@ def _render_trade_calculator(
     top_2.metric("Рекомендуемый личный депозит", _money(recommended_balance))
     top_3.metric("Цена челленджа", _money(prop_firm.challenge_fee))
 
-    input_1, input_2 = st.columns(2)
+    input_1, input_2, input_3 = st.columns(3)
     stage_key = input_1.selectbox("Текущая стадия", list(stage_options.keys()), format_func=stage_options.get)
     max_risk = _stage_max_risk(prop_firm, stage_key)
-    stage_prop_risk_percent = _stage_risk_percent(prop_firm, stage_key)
+    trade_risk_key = f"calculator_trade_risk_applied_{stage_key}"
+    trade_risk_default_key = f"calculator_trade_risk_default_{stage_key}"
+    if (
+        trade_risk_key not in st.session_state
+        or st.session_state.get(trade_risk_default_key) != max_risk
+    ):
+        st.session_state[trade_risk_key] = float(max_risk)
+        st.session_state[trade_risk_default_key] = float(max_risk)
+
+    with input_2.form(f"calculator_trade_risk_form_{stage_key}", border=False):
+        entered_trade_risk = st.number_input(
+            "Риск пропа в сделке, $",
+            value=float(st.session_state[trade_risk_key]),
+            min_value=1.0,
+            step=100.0,
+        )
+        trade_risk_submitted = st.form_submit_button("Применить", use_container_width=True)
+    if trade_risk_submitted:
+        st.session_state[trade_risk_key] = float(entered_trade_risk)
+    current_trade_prop_risk = float(st.session_state[trade_risk_key])
+    input_2.caption(f"Сейчас применяется: {_money(current_trade_prop_risk)}")
+    stage_prop_risk_percent = _risk_percent_from_amount(current_trade_prop_risk, prop_firm.nominal_balance)
 
     if "calculator_current_prop_pnl" not in st.session_state:
         st.session_state["calculator_current_prop_pnl"] = 0.0
@@ -346,13 +367,13 @@ def _render_trade_calculator(
         else:
             st.session_state["calculator_current_prop_pnl"] = abs(raw_value)
 
-    current_prop_pnl_raw = input_2.number_input(
+    current_prop_pnl_raw = input_3.number_input(
         "Текущий PnL пропа, $",
-        step=float(max_risk),
+        step=float(current_trade_prop_risk),
         key="calculator_current_prop_pnl",
         on_change=sync_pnl_sign,
     )
-    is_drawdown = input_2.checkbox("Это просадка", key="calculator_is_drawdown", on_change=sync_pnl_sign)
+    is_drawdown = input_3.checkbox("Это просадка", key="calculator_is_drawdown", on_change=sync_pnl_sign)
     current_prop_pnl = float(st.session_state.get("calculator_current_prop_pnl", current_prop_pnl_raw))
     target_enabled_for_stage = stage_key != "funded" or funded_target_enabled
 
@@ -377,7 +398,7 @@ def _render_trade_calculator(
         current_personal_balance=current_personal_balance,
         prop_risk_percent=stage_prop_risk_percent,
         mode=coverage_mode,
-        max_risk_per_trade=max_risk,
+        max_risk_per_trade=current_trade_prop_risk,
         target_enabled=target_enabled_for_stage,
         daily_loss_limit=daily_loss_limit,
         hedge_funded=hedge_funded,
@@ -395,13 +416,11 @@ def _render_trade_calculator(
     status_1, status_2, status_3, status_4 = st.columns(4)
     status_1.metric("Текущая стадия", stage_options[stage_key])
     status_2.metric("Авто-баланс личного", _money(current_personal_balance))
-    status_3.metric("Осталось до цели", _money(float(trade["distance_to_target"])) if target_enabled_for_stage else "цель отключена")
+    status_3.metric("Осталось до цели", _target_distance_display(target_enabled_for_stage, float(trade["distance_to_target"])))
     status_4.metric("Осталось до max loss", _money(float(trade["distance_to_max_loss"])))
 
     if target_enabled_for_stage:
         st.success(str(trade["target_status"]))
-    else:
-        st.info("Profit target на funded отключен: цель и расстояние до цели не участвуют в расчете риска.")
     if consider_news:
         st.info(f"Новости учитываются как forced close, а не как штраф. Текущий сценарий закрытия: {forced_close_r:.2f}R.")
 
@@ -411,7 +430,7 @@ def _render_trade_calculator(
         [
             {
                 "PnL пропа": _money(current_prop_pnl),
-                "Осталось до цели": _money(float(trade["distance_to_target"])) if target_enabled_for_stage else "цель отключена",
+                "Осталось до цели": _target_distance_display(target_enabled_for_stage, float(trade["distance_to_target"])),
                 "Осталось до max loss": _money(float(trade["distance_to_max_loss"])),
                 "Следующий риск пропа": _money(next_prop_risk),
                 "Следующий риск личного": _money(next_personal_risk),
@@ -576,7 +595,7 @@ def _render_research(
         rows.append(
             {
                 "PnL пропа": _money(pnl),
-                "Осталось до цели": _money(float(trade["distance_to_target"])) if target_enabled_for_stage else "цель отключена",
+                "Осталось до цели": _target_distance_display(target_enabled_for_stage, float(trade["distance_to_target"])),
                 "Осталось до max loss": _money(float(trade["distance_to_max_loss"])),
                 "Следующий риск пропа": _money(float(trade["Риск пропа, $"])),
                 "Следующий риск личного": _money(float(trade["Риск личного, $"])),
@@ -683,7 +702,13 @@ def _stage_max_risk(config: PropFirmConfig, stage_key: str) -> float:
 
 
 def _stage_risk_percent(config: PropFirmConfig, stage_key: str) -> float:
-    return round(_stage_max_risk(config, stage_key) / config.nominal_balance * 100, 6)
+    return _risk_percent_from_amount(_stage_max_risk(config, stage_key), config.nominal_balance)
+
+
+def _risk_percent_from_amount(risk_amount: float, nominal_balance: float) -> float:
+    if nominal_balance <= 0:
+        return 0.0
+    return round(risk_amount / nominal_balance * 100, 6)
 
 
 def _default_prop_risk_percent(config: PropFirmConfig) -> float:
@@ -709,6 +734,12 @@ def _funded_target_for_config(
     if enabled:
         return float(input_value)
     return float(existing_value or nominal_balance)
+
+
+def _target_distance_display(enabled: bool, distance: float) -> str:
+    if not enabled:
+        return ""
+    return _money(distance)
 
 
 def _make_stage_config(**kwargs) -> StageConfig:
