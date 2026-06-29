@@ -44,8 +44,8 @@ def main() -> None:
     prop_firm = load_prop_firm_config(Path(config_path))
     prop_firm = _sidebar_rules(st, prop_firm)
 
-    max_challenge_risk = max(stage.max_risk_per_trade or prop_firm.nominal_balance for stage in prop_firm.stages)
-    max_funded_risk = prop_firm.funded.max_risk_per_trade or prop_firm.nominal_balance
+    max_challenge_risk = max(_field(stage, "max_risk_per_trade", None) or prop_firm.nominal_balance for stage in prop_firm.stages)
+    max_funded_risk = _field(prop_firm.funded, "max_risk_per_trade", None) or prop_firm.nominal_balance
     max_prop_risk_percent = max(max_challenge_risk, max_funded_risk) / prop_firm.nominal_balance * 100
 
     st.sidebar.subheader("Риск и личный счет")
@@ -175,7 +175,7 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
             max_loss_mode = st.radio(
                 f"Этап {index}: max loss режим",
                 ["amount", "percent"],
-                index=0 if default_stage.max_loss_mode == "amount" else 1,
+                index=0 if _field(default_stage, "max_loss_mode", "amount") == "amount" else 1,
                 horizontal=True,
                 key=f"phase_{index}_max_loss_mode",
             )
@@ -189,11 +189,11 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
             daily_loss_mode = st.radio(
                 f"Этап {index}: daily loss режим",
                 ["amount", "percent"],
-                index=0 if default_stage.daily_loss_mode == "amount" else 1,
+                index=0 if _field(default_stage, "daily_loss_mode", "amount") == "amount" else 1,
                 horizontal=True,
                 key=f"phase_{index}_daily_loss_mode",
             )
-            default_daily_loss = default_stage.daily_loss or default_stage.max_loss / 2
+            default_daily_loss = _field(default_stage, "daily_loss", None) or default_stage.max_loss / 2
             daily_loss_input = st.number_input(
                 f"Этап {index}: daily loss",
                 value=_from_amount(default_daily_loss, daily_loss_mode, prop_firm.nominal_balance),
@@ -203,7 +203,7 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
             )
             max_risk = st.number_input(
                 f"Этап {index}: max risk per trade, $",
-                value=float(default_stage.max_risk_per_trade or prop_firm.prop_risk_per_trade),
+                value=float(_field(default_stage, "max_risk_per_trade", None) or prop_firm.prop_risk_per_trade),
                 min_value=1.0,
                 step=100.0,
                 key=f"phase_{index}_max_risk",
@@ -211,12 +211,12 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
             drawdown_mode = st.radio(
                 f"Этап {index}: drawdown",
                 ["static", "trailing"],
-                index=0 if default_stage.drawdown_mode == "static" else 1,
+                index=0 if _field(default_stage, "drawdown_mode", "static") == "static" else 1,
                 horizontal=True,
                 key=f"phase_{index}_drawdown",
             )
             stages.append(
-                StageConfig(
+                _make_stage_config(
                     name=f"phase_{index}",
                     profit_target=float(profit_target),
                     max_loss=_to_amount(float(max_loss_input), max_loss_mode, prop_firm.nominal_balance),
@@ -241,7 +241,7 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
     funded_max_loss_mode = st.sidebar.radio(
         "Funded: max loss режим",
         ["amount", "percent"],
-        index=0 if funded.max_loss_mode == "amount" else 1,
+        index=0 if _field(funded, "max_loss_mode", "amount") == "amount" else 1,
         horizontal=True,
     )
     funded_max_loss = st.sidebar.number_input(
@@ -253,18 +253,18 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
     funded_daily_loss_mode = st.sidebar.radio(
         "Funded: daily loss режим",
         ["amount", "percent"],
-        index=0 if funded.daily_loss_mode == "amount" else 1,
+        index=0 if _field(funded, "daily_loss_mode", "amount") == "amount" else 1,
         horizontal=True,
     )
     funded_daily_loss = st.sidebar.number_input(
         "Funded: daily loss",
-        value=_from_amount(funded.daily_loss or funded.max_loss / 2, funded_daily_loss_mode, prop_firm.nominal_balance),
+        value=_from_amount(_field(funded, "daily_loss", None) or funded.max_loss / 2, funded_daily_loss_mode, prop_firm.nominal_balance),
         min_value=0.01,
         step=500.0 if funded_daily_loss_mode == "amount" else 0.1,
     )
     funded_max_risk = st.sidebar.number_input(
         "Funded: max risk per trade, $",
-        value=float(funded.max_risk_per_trade or prop_firm.prop_risk_per_trade),
+        value=float(_field(funded, "max_risk_per_trade", None) or prop_firm.prop_risk_per_trade),
         min_value=1.0,
         step=100.0,
     )
@@ -278,7 +278,7 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
     funded_drawdown_mode = st.sidebar.radio(
         "Funded: drawdown",
         ["static", "trailing"],
-        index=0 if funded.drawdown_mode == "static" else 1,
+        index=0 if _field(funded, "drawdown_mode", "static") == "static" else 1,
         horizontal=True,
     )
     if funded_drawdown_mode == "trailing":
@@ -288,7 +288,7 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
         challenge_fee=float(challenge_fee),
         nominal_balance=float(nominal_balance),
         stages=stages,
-        funded=FundedConfig(
+        funded=_make_funded_config(
             profit_target_for_first_payout=float(funded_profit_target if funded_profit_target_enabled else nominal_balance),
             max_loss=_to_amount(float(funded_max_loss), funded_max_loss_mode, float(nominal_balance)),
             trader_split=float(trader_split_percent) / 100,
@@ -646,15 +646,41 @@ def _render_prop_selection_principles(st) -> None:
 
 def _stage_max_risk(config: PropFirmConfig, stage_key: str) -> float:
     if stage_key == "funded":
-        return float(config.funded.max_risk_per_trade or config.prop_risk_per_trade)
+        return float(_field(config.funded, "max_risk_per_trade", None) or config.prop_risk_per_trade)
     stage = config.stages[int(stage_key.replace("phase_", "")) - 1]
-    return float(stage.max_risk_per_trade or config.prop_risk_per_trade)
+    return float(_field(stage, "max_risk_per_trade", None) or config.prop_risk_per_trade)
 
 
 def _stage_daily_loss(config: PropFirmConfig, stage_key: str) -> float | None:
     if stage_key == "funded":
-        return config.funded.daily_loss
-    return config.stages[int(stage_key.replace("phase_", "")) - 1].daily_loss
+        return _field(config.funded, "daily_loss", None)
+    return _field(config.stages[int(stage_key.replace("phase_", "")) - 1], "daily_loss", None)
+
+
+def _field(obj, name: str, default):
+    return getattr(obj, name, default)
+
+
+def _make_stage_config(**kwargs) -> StageConfig:
+    try:
+        return StageConfig(**kwargs)
+    except TypeError:
+        return StageConfig(
+            name=kwargs["name"],
+            profit_target=kwargs["profit_target"],
+            max_loss=kwargs["max_loss"],
+        )
+
+
+def _make_funded_config(**kwargs) -> FundedConfig:
+    try:
+        return FundedConfig(**kwargs)
+    except TypeError:
+        return FundedConfig(
+            profit_target_for_first_payout=kwargs["profit_target_for_first_payout"],
+            max_loss=kwargs["max_loss"],
+            trader_split=kwargs["trader_split"],
+        )
 
 
 def _money(value: float) -> str:
