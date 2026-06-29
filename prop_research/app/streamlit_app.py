@@ -18,6 +18,7 @@ from prop_research.app.hedge_model import (
 )
 from prop_research.app.risk_curve import build_risk_curve
 from prop_research.config.loader import load_prop_firm_config
+from prop_research.domain.config import StageConfig
 from prop_research.optimization.grid_search import GridSearchOptimizer
 from prop_research.simulation.monte_carlo import MonteCarloEngine, SimulationConfig
 from prop_research.strategies.continuous import ContinuousPersonalRiskStrategy
@@ -53,13 +54,55 @@ def main() -> None:
         nominal_balance=float(nominal_balance),
     )
 
-    initial_personal_balance = st.sidebar.number_input("Баланс личного счета, $", value=200.0, step=10.0)
+    st.sidebar.subheader("Правила челленджа")
+    challenge_type = st.sidebar.radio("Тип челленджа", ["1 фазный", "2 фазный"], horizontal=True)
+    default_phase_1 = prop_firm.stages[0]
+    default_phase_2 = prop_firm.stages[1] if len(prop_firm.stages) > 1 else prop_firm.stages[0]
+    phase_1_profit_target = st.sidebar.number_input(
+        "1 стадия: profit target, $",
+        value=default_phase_1.profit_target,
+        min_value=1.0,
+        step=500.0,
+    )
+    phase_1_max_loss = st.sidebar.number_input(
+        "1 стадия: max loss, $",
+        value=default_phase_1.max_loss,
+        min_value=1.0,
+        step=500.0,
+    )
+    stages = [
+        StageConfig(name="phase_1", profit_target=float(phase_1_profit_target), max_loss=float(phase_1_max_loss))
+    ]
+    if challenge_type == "2 фазный":
+        phase_2_profit_target = st.sidebar.number_input(
+            "2 стадия: profit target, $",
+            value=default_phase_2.profit_target,
+            min_value=1.0,
+            step=500.0,
+        )
+        phase_2_max_loss = st.sidebar.number_input(
+            "2 стадия: max loss, $",
+            value=default_phase_2.max_loss,
+            min_value=1.0,
+            step=500.0,
+        )
+        stages.append(
+            StageConfig(name="phase_2", profit_target=float(phase_2_profit_target), max_loss=float(phase_2_max_loss))
+        )
+    prop_firm = replace(prop_firm, stages=stages)
+
     prop_risk_percent = st.sidebar.number_input("Риск проп-счета на сделку, %", value=1.0, step=0.1)
     prop_risk_amount_for_step = prop_firm.nominal_balance * prop_risk_percent / 100
     st.sidebar.subheader("Funded")
     payout_profit_target = st.sidebar.number_input(
         "Профит до первой выплаты, $",
         value=prop_firm.funded.profit_target_for_first_payout,
+        min_value=1.0,
+        step=500.0,
+    )
+    funded_max_loss = st.sidebar.number_input(
+        "Funded: max loss, $",
+        value=prop_firm.funded.max_loss,
         min_value=1.0,
         step=500.0,
     )
@@ -75,9 +118,25 @@ def main() -> None:
         funded=replace(
             prop_firm.funded,
             profit_target_for_first_payout=float(payout_profit_target),
+            max_loss=float(funded_max_loss),
             trader_split=float(trader_split_percent) / 100,
         ),
     )
+    recommended_balance = minimum_personal_deposit_for_strict_free_prop(
+        config=prop_firm,
+        prop_risk_percent=prop_risk_percent,
+    ).minimum_personal_deposit
+    st.sidebar.subheader("Личный счет")
+    st.sidebar.metric("Рекомендуемый баланс", f"${recommended_balance:,.2f}")
+    use_recommended_balance = st.sidebar.checkbox("Использовать рекомендуемый баланс", value=True)
+    custom_personal_balance = st.sidebar.number_input(
+        "Баланс личного счета, $",
+        value=float(recommended_balance),
+        min_value=0.0,
+        step=10.0,
+        disabled=use_recommended_balance,
+    )
+    initial_personal_balance = float(recommended_balance if use_recommended_balance else custom_personal_balance)
     coverage_label = st.sidebar.radio(
         "Что должно произойти при потере пропа",
         [

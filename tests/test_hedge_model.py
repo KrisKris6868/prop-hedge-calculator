@@ -90,6 +90,26 @@ def test_minimum_personal_deposit_for_strict_free_prop() -> None:
     assert requirement.total_success_path_personal_loss == 795.31
 
 
+def test_minimum_personal_deposit_recalculates_for_one_phase_challenge() -> None:
+    config = PropFirmConfig(
+        challenge_fee=200.0,
+        nominal_balance=100_000.0,
+        stages=[
+            StageConfig(name="phase_1", profit_target=6_000.0, max_loss=8_000.0),
+        ],
+        funded=FundedConfig(profit_target_for_first_payout=5_000.0, max_loss=8_000.0, trader_split=0.8),
+        prop_risk_per_trade=1_000.0,
+    )
+
+    requirement = minimum_personal_deposit_for_strict_free_prop(
+        config=config,
+        prop_risk_percent=1.0,
+    )
+
+    assert requirement.minimum_personal_deposit == 368.75
+    assert requirement.total_capital_before_payout == 568.75
+
+
 def test_dealing_instruction_for_one_and_half_percent_prop_risk() -> None:
     instruction = build_dealing_instruction(
         config=make_config(),
