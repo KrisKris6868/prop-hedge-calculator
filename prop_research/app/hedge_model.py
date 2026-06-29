@@ -185,7 +185,20 @@ def build_dealing_instruction(
     )
     instruction: list[dict[str, float | str]] = []
 
+    cumulative_personal_cost = 0.0
     for row in plan.rows:
+        cumulative_personal_cost += row.personal_loss_if_stage_passed
+        payout_columns: dict[str, float] = {}
+        if row.stage_name == "Funded до первой выплаты":
+            gross_profit = config.funded.profit_target_for_first_payout
+            payout_after_split = gross_profit * config.funded.trader_split
+            payout_columns = {
+                "Gross profit до выплаты, $": round(gross_profit, 2),
+                "Профит сплит, %": round(config.funded.trader_split * 100, 2),
+                "К выплате после сплита, $": round(payout_after_split, 2),
+                "Затраты личного счета до выплаты, $": round(cumulative_personal_cost, 2),
+                "Чистыми после личных затрат, $": round(payout_after_split - cumulative_personal_cost, 2),
+            }
         instruction.append(
             {
                 "Стадия": row.stage_name,
@@ -206,6 +219,7 @@ def build_dealing_instruction(
                 "Личная просадка при проходе стадии, $": row.personal_loss_if_stage_passed,
                 "Личный счет после прохода стадии, $": row.personal_balance_after_stage_passed,
                 "Личный счет при потере пропа, $": row.personal_balance_if_stage_failed,
+                **payout_columns,
             }
         )
 

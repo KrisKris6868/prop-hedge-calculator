@@ -55,6 +55,29 @@ def main() -> None:
 
     initial_personal_balance = st.sidebar.number_input("Баланс личного счета, $", value=200.0, step=10.0)
     prop_risk_percent = st.sidebar.number_input("Риск проп-счета на сделку, %", value=1.0, step=0.1)
+    prop_risk_amount_for_step = prop_firm.nominal_balance * prop_risk_percent / 100
+    st.sidebar.subheader("Funded")
+    payout_profit_target = st.sidebar.number_input(
+        "Профит до первой выплаты, $",
+        value=prop_firm.funded.profit_target_for_first_payout,
+        min_value=1.0,
+        step=500.0,
+    )
+    trader_split_percent = st.sidebar.number_input(
+        "Профит сплит трейдера, %",
+        value=prop_firm.funded.trader_split * 100,
+        min_value=1.0,
+        max_value=100.0,
+        step=1.0,
+    )
+    prop_firm = replace(
+        prop_firm,
+        funded=replace(
+            prop_firm.funded,
+            profit_target_for_first_payout=float(payout_profit_target),
+            trader_split=float(trader_split_percent) / 100,
+        ),
+    )
     coverage_label = st.sidebar.radio(
         "Что должно произойти при потере пропа",
         [
@@ -84,7 +107,12 @@ def main() -> None:
         format_func=stage_options.get,
         key="calculator_stage",
     )
-    current_prop_pnl_abs = calc_col_2.number_input("Текущий PnL пропа на стадии, $", value=0.0, step=100.0)
+    current_prop_pnl_abs = calc_col_2.number_input(
+        "Текущий PnL пропа на стадии, $",
+        value=0.0,
+        step=float(prop_risk_amount_for_step) if prop_risk_amount_for_step > 0 else 100.0,
+        help="Кнопки +/- двигают PnL на размер риска пропа. Вручную можно ввести любое число.",
+    )
     is_drawdown = calc_col_2.checkbox("Это просадка", value=False)
     current_prop_pnl = -abs(current_prop_pnl_abs) if is_drawdown else abs(current_prop_pnl_abs)
     personal_balance_state = calculate_personal_balance_from_prop_pnl(
@@ -229,6 +257,20 @@ def main() -> None:
     instruction_df = pd.DataFrame(dealing_instruction)
     st.dataframe(instruction_df, use_container_width=True, hide_index=True)
 
+    gross_payout = prop_firm.funded.profit_target_for_first_payout
+    payout_after_split = gross_payout * prop_firm.funded.trader_split
+    net_after_personal_costs = payout_after_split - stage_plan.personal_loss_if_all_targets_hit
+    st.subheader("4. Расчет выплаты на funded")
+    payout_col_1, payout_col_2, payout_col_3 = st.columns(3)
+    payout_col_1.metric("Профит до выплаты", f"${gross_payout:,.2f}")
+    payout_col_2.metric("К выплате после сплита", f"${payout_after_split:,.2f}")
+    payout_col_3.metric("Чистыми после личных затрат", f"${net_after_personal_costs:,.2f}")
+    st.write(
+        f"Формула: `${gross_payout:,.2f} * {prop_firm.funded.trader_split:.0%} = "
+        f"${payout_after_split:,.2f}`. Затем вычитаем расчетные затраты личного счета "
+        f"до выплаты: `${stage_plan.personal_loss_if_all_targets_hit:,.2f}`."
+    )
+
     strategy_name = st.sidebar.selectbox(
         "Дополнительная исследовательская модель",
         ["Зональная", "Непрерывная", "Фиксированная"],
@@ -267,7 +309,7 @@ def main() -> None:
     curve_df = pd.DataFrame(curve_rows)
     prop_risk_amount = prop_firm.nominal_balance * prop_risk_percent / 100
 
-    st.subheader("4. График риска внутри выбранной стадии")
+    st.subheader("5. График риска внутри выбранной стадии")
     st.write(
         "Этот график нужен для ориентира внутри стадии: где проп сейчас находится относительно цели и max loss. "
         "Он показывает риск выбранной исследовательской модели, а таблица выше показывает автоматический "
@@ -315,7 +357,7 @@ def main() -> None:
         seed=int(seed),
     )
 
-    st.subheader("5. Monte Carlo-проверка стратегии")
+    st.subheader("6. Monte Carlo-проверка стратегии")
     if st.button("Запустить симуляцию", type="primary"):
         result = MonteCarloEngine().run(simulation=simulation, strategy=strategy)
         summary = result.summary

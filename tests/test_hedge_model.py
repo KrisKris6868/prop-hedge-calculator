@@ -115,6 +115,23 @@ def test_dealing_instruction_for_one_and_half_percent_prop_risk() -> None:
     assert funded["Личный счет при потере пропа, $"] == 400.0
 
 
+def test_funded_instruction_includes_net_payout_after_personal_costs() -> None:
+    instruction = build_dealing_instruction(
+        config=make_config(),
+        initial_personal_balance=200.0,
+        prop_risk_percent=1.0,
+        mode=CoverageMode.GROW_DEPOSIT_BY_FEE,
+    )
+
+    funded = instruction[2]
+
+    assert funded["Gross profit до выплаты, $"] == 5000.0
+    assert funded["Профит сплит, %"] == 80.0
+    assert funded["К выплате после сплита, $"] == 4000.0
+    assert funded["Затраты личного счета до выплаты, $"] == 795.3
+    assert funded["Чистыми после личных затрат, $"] == 3204.7
+
+
 def test_trade_calculator_returns_single_personal_risk_for_current_stage() -> None:
     result = calculate_personal_risk_for_trade(
         config=make_config(),
