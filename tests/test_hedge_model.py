@@ -4,6 +4,7 @@ from prop_research.app.hedge_model import (
     build_stage_plan,
     calculate_personal_balance_from_prop_pnl,
     calculate_personal_risk_for_trade,
+    calculate_funded_payout_preview,
     minimum_personal_deposit_for_strict_free_prop,
     required_risk_at_point,
 )
@@ -220,3 +221,19 @@ def test_personal_balance_includes_previous_stage_losses() -> None:
     assert result["Старт личного счета на стадии, $"] == 50.0
     assert result["Текущий баланс личного счета, $"] == 181.24
     assert result["Изменение личного счета на стадии, $"] == 131.24
+
+
+def test_funded_payout_preview_uses_current_funded_profit() -> None:
+    preview = calculate_funded_payout_preview(
+        config=make_config(),
+        initial_personal_balance=200.0,
+        prop_risk_percent=1.0,
+        funded_profit=1_000.0,
+        mode=CoverageMode.GROW_DEPOSIT_BY_FEE,
+    )
+
+    assert preview["Профит на funded, $"] == 1000.0
+    assert preview["Профит сплит, %"] == 80.0
+    assert preview["К выплате после сплита, $"] == 800.0
+    assert preview["Затраты личного счета до текущего funded profit, $"] == 489.06
+    assert preview["Чистыми после личных затрат, $"] == 310.94

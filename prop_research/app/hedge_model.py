@@ -291,6 +291,35 @@ def calculate_personal_risk_for_trade(
     }
 
 
+def calculate_funded_payout_preview(
+    config: PropFirmConfig,
+    initial_personal_balance: float,
+    prop_risk_percent: float,
+    funded_profit: float,
+    mode: CoverageMode,
+) -> dict[str, float]:
+    plan = build_stage_plan(
+        config=config,
+        initial_personal_balance=initial_personal_balance,
+        prop_risk_percent=prop_risk_percent,
+        mode=mode,
+    )
+    funded_row = plan.rows[-1]
+    prop_risk_amount = plan.prop_risk_amount
+    funded_win_units = max(0.0, funded_profit) / prop_risk_amount if prop_risk_amount > 0 else 0.0
+    challenge_stage_costs = sum(row.personal_loss_if_stage_passed for row in plan.rows[:-1])
+    funded_cost = funded_win_units * funded_row.required_personal_risk
+    personal_costs_to_current_profit = challenge_stage_costs + funded_cost
+    payout_after_split = max(0.0, funded_profit) * config.funded.trader_split
+    return {
+        "Профит на funded, $": round(max(0.0, funded_profit), 2),
+        "Профит сплит, %": round(config.funded.trader_split * 100, 2),
+        "К выплате после сплита, $": round(payout_after_split, 2),
+        "Затраты личного счета до текущего funded profit, $": round(personal_costs_to_current_profit, 2),
+        "Чистыми после личных затрат, $": round(payout_after_split - personal_costs_to_current_profit, 2),
+    }
+
+
 def _stage_plan_row_for_key(plan: StagePlan, stage_key: str) -> StagePlanRow:
     if stage_key == "funded":
         return plan.rows[-1]

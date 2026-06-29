@@ -12,6 +12,7 @@ from prop_research.app.hedge_model import (
     CoverageMode,
     build_dealing_instruction,
     build_stage_plan,
+    calculate_funded_payout_preview,
     calculate_personal_balance_from_prop_pnl,
     calculate_personal_risk_for_trade,
     minimum_personal_deposit_for_strict_free_prop,
@@ -215,6 +216,29 @@ def main() -> None:
         f"${float(trade_instruction['Цель личного счета при потере пропа, $']):,.2f}."
     )
 
+    funded_profit_for_preview = (
+        current_prop_pnl if calculator_stage_key == "funded" else prop_firm.funded.profit_target_for_first_payout
+    )
+    payout_preview = calculate_funded_payout_preview(
+        config=prop_firm,
+        initial_personal_balance=initial_personal_balance,
+        prop_risk_percent=prop_risk_percent,
+        funded_profit=funded_profit_for_preview,
+        mode=coverage_mode,
+    )
+    st.subheader("Выплата на funded")
+    payout_top_1, payout_top_2, payout_top_3 = st.columns(3)
+    payout_top_1.metric("Профит на funded", f"${payout_preview['Профит на funded, $']:,.2f}")
+    payout_top_2.metric("К выплате после сплита", f"${payout_preview['К выплате после сплита, $']:,.2f}")
+    payout_top_3.metric("Чистыми после личных затрат", f"${payout_preview['Чистыми после личных затрат, $']:,.2f}")
+    st.caption(
+        f"Формула: ${payout_preview['Профит на funded, $']:,.2f} * "
+        f"{payout_preview['Профит сплит, %']:.0f}% = "
+        f"${payout_preview['К выплате после сплита, $']:,.2f}. "
+        f"Затем вычитаем затраты личного счета до этого funded profit: "
+        f"${payout_preview['Затраты личного счета до текущего funded profit, $']:,.2f}."
+    )
+
     stage_plan = build_stage_plan(
         config=prop_firm,
         initial_personal_balance=initial_personal_balance,
@@ -315,20 +339,6 @@ def main() -> None:
     )
     instruction_df = pd.DataFrame(dealing_instruction)
     st.dataframe(instruction_df, use_container_width=True, hide_index=True)
-
-    gross_payout = prop_firm.funded.profit_target_for_first_payout
-    payout_after_split = gross_payout * prop_firm.funded.trader_split
-    net_after_personal_costs = payout_after_split - stage_plan.personal_loss_if_all_targets_hit
-    st.subheader("4. Расчет выплаты на funded")
-    payout_col_1, payout_col_2, payout_col_3 = st.columns(3)
-    payout_col_1.metric("Профит до выплаты", f"${gross_payout:,.2f}")
-    payout_col_2.metric("К выплате после сплита", f"${payout_after_split:,.2f}")
-    payout_col_3.metric("Чистыми после личных затрат", f"${net_after_personal_costs:,.2f}")
-    st.write(
-        f"Формула: `${gross_payout:,.2f} * {prop_firm.funded.trader_split:.0%} = "
-        f"${payout_after_split:,.2f}`. Затем вычитаем расчетные затраты личного счета "
-        f"до выплаты: `${stage_plan.personal_loss_if_all_targets_hit:,.2f}`."
-    )
 
     strategy_name = st.sidebar.selectbox(
         "Дополнительная исследовательская модель",
