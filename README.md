@@ -1,3 +1,15 @@
+---
+title: Prop Hedge Calculator
+emoji: 📊
+colorFrom: red
+colorTo: gray
+sdk: streamlit
+sdk_version: 1.36.0
+app_file: app.py
+pinned: false
+license: mit
+---
+
 # Prop Research
 
 Исследовательская платформа для Monte Carlo-моделирования управления капиталом при прохождении проп-фирм.
