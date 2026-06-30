@@ -7,6 +7,7 @@ from prop_research.app.streamlit_app import (
     _hedge_summary_display,
     _make_prop_firm_config,
     _personal_spent,
+    _positive_amount,
     _stage_options,
     _risk_percent_from_amount,
     _stage_risk_percent,
@@ -127,3 +128,9 @@ def test_make_prop_firm_config_is_backward_compatible_without_account_type(monke
 
     assert isinstance(config, LegacyPropFirmConfig)
     assert not hasattr(config, "account_type")
+
+
+def test_positive_amount_falls_back_from_stale_zero_widget_state() -> None:
+    assert _positive_amount(0.0, fallback=8_000.0) == 8_000.0
+    assert _positive_amount(-1.0, fallback=8_000.0) == 8_000.0
+    assert _positive_amount(3_000.0, fallback=8_000.0) == 3_000.0

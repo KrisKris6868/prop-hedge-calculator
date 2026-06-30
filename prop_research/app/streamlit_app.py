@@ -145,42 +145,42 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
             ["amount", "percent"],
             index=0 if _field(funded, "max_loss_mode", "amount") == "amount" else 1,
             horizontal=True,
-            key="instant_max_loss_mode",
+            key="account_instant_max_loss_mode",
         )
         instant_max_loss = st.sidebar.number_input(
             "Instant: max loss",
             value=_from_amount(funded.max_loss, instant_max_loss_mode, prop_firm.nominal_balance),
             min_value=0.01,
             step=500.0 if instant_max_loss_mode == "amount" else 0.1,
-            key="instant_max_loss",
+            key="account_instant_max_loss",
         )
         instant_daily_loss_mode = st.sidebar.radio(
             "Instant: daily loss режим",
             ["amount", "percent"],
             index=0 if _field(funded, "daily_loss_mode", "amount") == "amount" else 1,
             horizontal=True,
-            key="instant_daily_loss_mode",
+            key="account_instant_daily_loss_mode",
         )
         instant_daily_loss = st.sidebar.number_input(
             "Instant: daily loss",
             value=_from_amount(_field(funded, "daily_loss", None) or funded.max_loss / 2, instant_daily_loss_mode, prop_firm.nominal_balance),
             min_value=0.01,
             step=500.0 if instant_daily_loss_mode == "amount" else 0.1,
-            key="instant_daily_loss",
+            key="account_instant_daily_loss",
         )
         instant_max_risk = st.sidebar.number_input(
             "Instant: max risk per trade, $",
             value=float(_field(funded, "max_risk_per_trade", None) or prop_firm.prop_risk_per_trade),
             min_value=1.0,
             step=100.0,
-            key="instant_max_risk",
+            key="account_instant_max_risk",
         )
         instant_drawdown_mode = st.sidebar.radio(
             "Instant: drawdown",
             ["static", "trailing"],
             index=0 if _field(funded, "drawdown_mode", "static") == "static" else 1,
             horizontal=True,
-            key="instant_drawdown",
+            key="account_instant_drawdown",
         )
         consistency_enabled = st.sidebar.checkbox("Consistency rule", value=False, key="instant_consistency_enabled")
         st.sidebar.number_input(
@@ -198,7 +198,7 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
             min_value=1.0,
             max_value=100.0,
             step=1.0,
-            key="instant_split",
+            key="account_instant_split",
         )
         instant_profit_target_enabled = st.sidebar.checkbox("Profit target", value=True, key="funded_profit_target_enabled")
         instant_profit_target = st.sidebar.number_input(
@@ -207,7 +207,15 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
             min_value=1.0,
             step=500.0,
             disabled=not instant_profit_target_enabled,
-            key="instant_profit_target",
+            key="account_instant_profit_target",
+        )
+        instant_max_loss_amount = _positive_amount(
+            _to_amount(float(instant_max_loss), instant_max_loss_mode, float(nominal_balance)),
+            fallback=funded.max_loss,
+        )
+        instant_daily_loss_amount = _positive_amount(
+            _to_amount(float(instant_daily_loss), instant_daily_loss_mode, float(nominal_balance)),
+            fallback=_field(funded, "daily_loss", None) or funded.max_loss / 2,
         )
 
         return _make_prop_firm_config(
@@ -221,10 +229,10 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
                     existing_value=funded.profit_target_for_first_payout,
                     nominal_balance=float(nominal_balance),
                 ),
-                max_loss=_to_amount(float(instant_max_loss), instant_max_loss_mode, float(nominal_balance)),
+                max_loss=instant_max_loss_amount,
                 trader_split=float(instant_split_percent) / 100,
                 max_loss_mode=instant_max_loss_mode,
-                daily_loss=_to_amount(float(instant_daily_loss), instant_daily_loss_mode, float(nominal_balance)),
+                daily_loss=instant_daily_loss_amount,
                 daily_loss_mode=instant_daily_loss_mode,
                 max_risk_per_trade=float(instant_max_risk),
                 drawdown_mode=instant_drawdown_mode,
@@ -925,6 +933,12 @@ def _to_amount(value: float, mode: str, nominal_balance: float) -> float:
 
 def _from_amount(value: float, mode: str, nominal_balance: float) -> float:
     return value if mode == "amount" else value / nominal_balance * 100
+
+
+def _positive_amount(value: float, fallback: float) -> float:
+    if value > 0:
+        return value
+    return fallback
 
 
 if __name__ == "__main__":
