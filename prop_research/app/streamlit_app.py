@@ -459,23 +459,12 @@ def _render_trade_calculator(
 
     if "calculator_current_prop_pnl" not in st.session_state:
         st.session_state["calculator_current_prop_pnl"] = 0.0
-    if "calculator_is_drawdown" not in st.session_state:
-        st.session_state["calculator_is_drawdown"] = False
-
-    def sync_pnl_sign() -> None:
-        raw_value = float(st.session_state.get("calculator_current_prop_pnl", 0.0))
-        if st.session_state.get("calculator_is_drawdown", False):
-            st.session_state["calculator_current_prop_pnl"] = -abs(raw_value)
-        else:
-            st.session_state["calculator_current_prop_pnl"] = abs(raw_value)
 
     current_prop_pnl_raw = input_3.number_input(
         "Текущий PnL пропа, $",
         step=float(current_trade_prop_risk),
         key="calculator_current_prop_pnl",
-        on_change=sync_pnl_sign,
     )
-    is_drawdown = input_3.checkbox("Это просадка", key="calculator_is_drawdown", on_change=sync_pnl_sign)
     current_prop_pnl = float(st.session_state.get("calculator_current_prop_pnl", current_prop_pnl_raw))
     target_enabled_for_stage = stage_key != "funded" or funded_target_enabled
     drawdown_mode = _stage_drawdown_mode(prop_firm, stage_key)
@@ -538,7 +527,6 @@ def _render_trade_calculator(
         def reset_trailing_account() -> None:
             st.session_state[trailing_key] = 0.0
             st.session_state["calculator_current_prop_pnl"] = 0.0
-            st.session_state["calculator_is_drawdown"] = False
 
         trailing_info, trailing_reset = st.columns([4, 1])
         trailing_info.info(
