@@ -1,6 +1,8 @@
 from prop_research.app.streamlit_app import (
     _default_prop_risk_percent,
     _funded_target_for_config,
+    _hedge_summary_display,
+    _personal_spent,
     _risk_percent_from_amount,
     _stage_risk_percent,
     _target_distance_display,
@@ -50,3 +52,13 @@ def test_risk_percent_from_amount_uses_current_trade_risk_amount() -> None:
 def test_target_distance_display_is_blank_when_target_is_disabled() -> None:
     assert _target_distance_display(enabled=False, distance=1_234.0) == ""
     assert _target_distance_display(enabled=True, distance=1_234.0) == "$1,234.00"
+
+
+def test_personal_spent_shows_only_used_personal_funds() -> None:
+    assert _personal_spent(starting_balance=795.31, current_balance=705.31) == 90.0
+    assert _personal_spent(starting_balance=795.31, current_balance=840.31) == 0.0
+
+
+def test_hedge_summary_display_is_compact() -> None:
+    assert _hedge_summary_display(multiplier=40.0, personal_percent=2.5) == "2.50% от пропа · 40x меньше"
+    assert _hedge_summary_display(multiplier=0.0, personal_percent=0.0) == "нет хеджа"

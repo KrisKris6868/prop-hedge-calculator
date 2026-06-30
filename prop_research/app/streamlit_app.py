@@ -385,9 +385,11 @@ def _render_trade_calculator(
         prop_risk_percent=stage_prop_risk_percent,
         mode=coverage_mode,
     )
+    stage_starting_personal_balance = float(personal_balance_state["Старт личного счета на стадии, $"])
     current_personal_balance = float(personal_balance_state["Текущий баланс личного счета, $"])
     if stage_key == "funded" and not hedge_funded:
-        current_personal_balance = float(personal_balance_state["Старт личного счета на стадии, $"])
+        current_personal_balance = stage_starting_personal_balance
+    personal_spent = _personal_spent(stage_starting_personal_balance, current_personal_balance)
 
     daily_loss_limit = _stage_daily_loss(prop_firm, stage_key)
     trade = calculate_personal_risk_for_trade(
@@ -404,20 +406,21 @@ def _render_trade_calculator(
         hedge_funded=hedge_funded,
     )
 
-    risk_1, risk_2, risk_3, risk_4 = st.columns(4)
+    risk_1, risk_2, risk_3 = st.columns(3)
     risk_1.metric("Риск пропа", _money(float(trade["Риск пропа, $"])))
     risk_2.metric("Риск личного", _money(float(trade["Риск личного, $"])))
-    if float(trade["prop_to_personal_risk_multiple"]) > 0:
-        risk_3.metric("Во сколько раз меньше", f"{float(trade['prop_to_personal_risk_multiple']):.2f}x")
-    else:
-        risk_3.metric("Во сколько раз меньше", "нет хеджа")
-    risk_4.metric("Личный риск от пропа", _percent(float(trade["personal_risk_percent_of_prop"])))
+    risk_2.caption(
+        _hedge_summary_display(
+            multiplier=float(trade["prop_to_personal_risk_multiple"]),
+            personal_percent=float(trade["personal_risk_percent_of_prop"]),
+        )
+    )
+    risk_3.metric("Потрачено личных", _money(personal_spent))
 
-    status_1, status_2, status_3, status_4 = st.columns(4)
-    status_1.metric("Текущая стадия", stage_options[stage_key])
-    status_2.metric("Авто-баланс личного", _money(current_personal_balance))
-    status_3.metric("Осталось до цели", _target_distance_display(target_enabled_for_stage, float(trade["distance_to_target"])))
-    status_4.metric("Осталось до max loss", _money(float(trade["distance_to_max_loss"])))
+    status_1, status_2, status_3 = st.columns(3)
+    status_1.metric("Баланс личного", _money(current_personal_balance))
+    status_2.metric("Осталось до цели", _target_distance_display(target_enabled_for_stage, float(trade["distance_to_target"])))
+    status_3.metric("Осталось до max loss", _money(float(trade["distance_to_max_loss"])))
 
     if target_enabled_for_stage:
         st.success(str(trade["target_status"]))
@@ -430,6 +433,7 @@ def _render_trade_calculator(
         [
             {
                 "PnL пропа": _money(current_prop_pnl),
+                "Потрачено личных": _money(personal_spent),
                 "Осталось до цели": _target_distance_display(target_enabled_for_stage, float(trade["distance_to_target"])),
                 "Осталось до max loss": _money(float(trade["distance_to_max_loss"])),
                 "Следующий риск пропа": _money(next_prop_risk),
@@ -709,6 +713,17 @@ def _risk_percent_from_amount(risk_amount: float, nominal_balance: float) -> flo
     if nominal_balance <= 0:
         return 0.0
     return round(risk_amount / nominal_balance * 100, 6)
+
+
+def _personal_spent(starting_balance: float, current_balance: float) -> float:
+    return round(max(0.0, starting_balance - current_balance), 2)
+
+
+def _hedge_summary_display(multiplier: float, personal_percent: float) -> str:
+    if multiplier <= 0:
+        return "нет хеджа"
+    compact_multiplier = f"{multiplier:.0f}x" if multiplier.is_integer() else f"{multiplier:.1f}x"
+    return f"{personal_percent:.2f}% от пропа · {compact_multiplier} меньше"
 
 
 def _default_prop_risk_percent(config: PropFirmConfig) -> float:
