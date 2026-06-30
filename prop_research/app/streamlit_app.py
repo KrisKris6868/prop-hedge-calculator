@@ -461,17 +461,13 @@ def _render_trade_calculator(
     target_enabled_for_stage = stage_key != "funded" or funded_target_enabled
     drawdown_mode = _stage_drawdown_mode(prop_firm, stage_key)
     trailing_high_watermark = max(0.0, current_prop_pnl)
+    trailing_key = None
     if drawdown_mode == "trailing":
         trailing_key = f"calculator_trailing_high_watermark_{stage_key}"
         if trailing_key not in st.session_state:
             st.session_state[trailing_key] = max(0.0, current_prop_pnl)
         st.session_state[trailing_key] = max(float(st.session_state[trailing_key]), current_prop_pnl)
         trailing_high_watermark = float(st.session_state[trailing_key])
-        trailing_1, trailing_2 = input_3.columns([2, 1])
-        trailing_1.caption(f"Trailing max: {_money(prop_firm.nominal_balance + trailing_high_watermark)}")
-        if trailing_2.button("Сброс", key=f"reset_trailing_high_watermark_{stage_key}", use_container_width=True):
-            st.session_state[trailing_key] = max(0.0, current_prop_pnl)
-            trailing_high_watermark = float(st.session_state[trailing_key])
 
     personal_balance_state = calculate_personal_balance_from_prop_pnl(
         config=prop_firm,
@@ -518,6 +514,44 @@ def _render_trade_calculator(
     status_1.metric("Баланс личного", _money(current_personal_balance))
     status_2.metric("Осталось до цели", _target_distance_display(target_enabled_for_stage, float(trade["distance_to_target"])))
     status_3.metric("Осталось до max loss", _money(float(trade["distance_to_max_loss"])))
+
+    if drawdown_mode == "trailing" and trailing_key is not None:
+        def reset_trailing_account() -> None:
+            st.session_state[trailing_key] = 0.0
+            st.session_state["calculator_current_prop_pnl"] = 0.0
+            st.session_state["calculator_is_drawdown"] = False
+
+        trailing_info, trailing_reset = st.columns([4, 1])
+        trailing_info.info(
+            _escape_markdown_dollars(
+                _trailing_drawdown_display(
+                    nominal_balance=prop_firm.nominal_balance,
+                    trailing_high_watermark=trailing_high_watermark,
+                    max_loss=_stage_max_loss(prop_firm, stage_key),
+                )
+            )
+        )
+        trailing_reset.button(
+            "Сбросить счет",
+            key=f"reset_trailing_account_{stage_key}",
+            use_container_width=True,
+            on_click=reset_trailing_account,
+        )
+
+    consistency_status = _consistency_status_display(
+        enabled=_account_type(prop_firm) == "instant" and bool(st.session_state.get("instant_consistency_enabled", False)),
+        rule_percent=float(st.session_state.get("instant_consistency", 0.0)),
+        current_prop_pnl=current_prop_pnl,
+        largest_profit=current_trade_prop_risk,
+    )
+    if consistency_status is not None:
+        consistency_level, consistency_message = consistency_status
+        if consistency_level == "success":
+            st.success(_escape_markdown_dollars(consistency_message))
+        elif consistency_level == "warning":
+            st.warning(_escape_markdown_dollars(consistency_message))
+        else:
+            st.info(_escape_markdown_dollars(consistency_message))
 
     if target_enabled_for_stage:
         st.success(str(trade["target_status"]))
@@ -863,6 +897,12 @@ def _stage_daily_loss(config: PropFirmConfig, stage_key: str) -> float | None:
     return _field(config.stages[int(stage_key.replace("phase_", "")) - 1], "daily_loss", None)
 
 
+def _stage_max_loss(config: PropFirmConfig, stage_key: str) -> float:
+    if stage_key == "funded":
+        return float(_field(config.funded, "max_loss", 0.0))
+    return float(_field(config.stages[int(stage_key.replace("phase_", "")) - 1], "max_loss", 0.0))
+
+
 def _stage_drawdown_mode(config: PropFirmConfig, stage_key: str) -> str:
     if stage_key == "funded":
         return str(_field(config.funded, "drawdown_mode", "static"))
@@ -888,6 +928,39 @@ def _target_distance_display(enabled: bool, distance: float) -> str:
     if not enabled:
         return ""
     return _money(distance)
+
+
+def _trailing_drawdown_display(nominal_balance: float, trailing_high_watermark: float, max_loss: float) -> str:
+    max_balance = nominal_balance + max(0.0, trailing_high_watermark)
+    failure_balance = max_balance - max_loss
+    return f"Trailing max {_money(max_balance)} · линия слива {_money(failure_balance)}"
+
+
+def _consistency_status_display(
+    enabled: bool,
+    rule_percent: float,
+    current_prop_pnl: float,
+    largest_profit: float,
+) -> tuple[str, str] | None:
+    if not enabled:
+        return None
+    if rule_percent <= 0 or largest_profit <= 0:
+        return ("info", "Consistency включен, но правило или прибыльная сделка пока не заданы.")
+    required_profit = largest_profit / (rule_percent / 100)
+    if current_prop_pnl >= required_profit:
+        return (
+            "success",
+            f"Consistency выполнен: крупнейшая сделка {_money(largest_profit)} укладывается в {rule_percent:.2f}% от прибыли.",
+        )
+    remaining = required_profit - max(0.0, current_prop_pnl)
+    return (
+        "warning",
+        f"Consistency еще не выполнен: нужен PnL {_money(required_profit)}, осталось {_money(remaining)}.",
+    )
+
+
+def _escape_markdown_dollars(text: str) -> str:
+    return text.replace("$", r"\$")
 
 
 def _make_stage_config(**kwargs) -> StageConfig:

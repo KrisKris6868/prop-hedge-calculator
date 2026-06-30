@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from prop_research.app.streamlit_app import (
+    _consistency_status_display,
     _default_prop_risk_percent,
     _enabled_tab_labels,
     _funded_target_for_config,
@@ -12,6 +13,7 @@ from prop_research.app.streamlit_app import (
     _risk_percent_from_amount,
     _stage_risk_percent,
     _target_distance_display,
+    _trailing_drawdown_display,
 )
 from prop_research.domain.config import FundedConfig, PropFirmConfig, StageConfig
 
@@ -58,6 +60,44 @@ def test_risk_percent_from_amount_uses_current_trade_risk_amount() -> None:
 def test_target_distance_display_is_blank_when_target_is_disabled() -> None:
     assert _target_distance_display(enabled=False, distance=1_234.0) == ""
     assert _target_distance_display(enabled=True, distance=1_234.0) == "$1,234.00"
+
+
+def test_trailing_drawdown_display_shows_high_watermark_and_failure_line() -> None:
+    assert _trailing_drawdown_display(
+        nominal_balance=100_000.0,
+        trailing_high_watermark=1_000.0,
+        max_loss=5_000.0,
+    ) == "Trailing max $101,000.00 · линия слива $96,000.00"
+
+
+def test_consistency_status_display_shows_needed_profit() -> None:
+    assert _consistency_status_display(
+        enabled=True,
+        rule_percent=15.0,
+        current_prop_pnl=4_500.0,
+        largest_profit=900.0,
+    ) == (
+        "warning",
+        "Consistency еще не выполнен: нужен PnL $6,000.00, осталось $1,500.00.",
+    )
+    assert _consistency_status_display(
+        enabled=True,
+        rule_percent=15.0,
+        current_prop_pnl=6_000.0,
+        largest_profit=900.0,
+    ) == (
+        "success",
+        "Consistency выполнен: крупнейшая сделка $900.00 укладывается в 15.00% от прибыли.",
+    )
+
+
+def test_consistency_status_display_is_hidden_when_disabled() -> None:
+    assert _consistency_status_display(
+        enabled=False,
+        rule_percent=15.0,
+        current_prop_pnl=4_500.0,
+        largest_profit=900.0,
+    ) is None
 
 
 def test_personal_spent_shows_only_used_personal_funds() -> None:
