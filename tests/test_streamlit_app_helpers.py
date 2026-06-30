@@ -5,6 +5,7 @@ from prop_research.app.streamlit_app import (
     _enabled_tab_labels,
     _funded_target_for_config,
     _hedge_summary_display,
+    _make_prop_firm_config,
     _personal_spent,
     _stage_options,
     _risk_percent_from_amount,
@@ -100,3 +101,29 @@ def test_stage_options_are_backward_compatible_with_old_config_objects() -> None
         "phase_1": "Этап 1: phase_1",
         "funded": "Funded до первой выплаты",
     }
+
+
+def test_make_prop_firm_config_is_backward_compatible_without_account_type(monkeypatch) -> None:
+    class LegacyPropFirmConfig:
+        def __init__(self, challenge_fee, nominal_balance, stages, funded, prop_risk_per_trade):
+            self.challenge_fee = challenge_fee
+            self.nominal_balance = nominal_balance
+            self.stages = stages
+            self.funded = funded
+            self.prop_risk_per_trade = prop_risk_per_trade
+
+    import prop_research.app.streamlit_app as streamlit_app
+
+    monkeypatch.setattr(streamlit_app, "PropFirmConfig", LegacyPropFirmConfig)
+
+    config = _make_prop_firm_config(
+        challenge_fee=200.0,
+        nominal_balance=100_000.0,
+        stages=[StageConfig(name="phase_1", profit_target=6_000.0, max_loss=8_000.0)],
+        funded=FundedConfig(profit_target_for_first_payout=5_000.0, max_loss=8_000.0, trader_split=0.8),
+        prop_risk_per_trade=1_000.0,
+        account_type="challenge",
+    )
+
+    assert isinstance(config, LegacyPropFirmConfig)
+    assert not hasattr(config, "account_type")

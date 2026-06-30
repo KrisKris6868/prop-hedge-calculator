@@ -210,7 +210,7 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
             key="instant_profit_target",
         )
 
-        return PropFirmConfig(
+        return _make_prop_firm_config(
             challenge_fee=float(challenge_fee),
             nominal_balance=float(nominal_balance),
             stages=[],
@@ -358,7 +358,7 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
     if funded_drawdown_mode == "trailing":
         st.sidebar.caption("Trailing drawdown требует state machine и будет учитываться в симуляции отдельным шагом.")
 
-    return PropFirmConfig(
+    return _make_prop_firm_config(
         challenge_fee=float(challenge_fee),
         nominal_balance=float(nominal_balance),
         stages=stages,
@@ -880,6 +880,15 @@ def _make_funded_config(**kwargs) -> FundedConfig:
             max_loss=kwargs["max_loss"],
             trader_split=kwargs["trader_split"],
         )
+
+
+def _make_prop_firm_config(**kwargs) -> PropFirmConfig:
+    try:
+        return PropFirmConfig(**kwargs)
+    except TypeError:
+        legacy_kwargs = dict(kwargs)
+        legacy_kwargs.pop("account_type", None)
+        return PropFirmConfig(**legacy_kwargs)
 
 
 def _money(value: float) -> str:
