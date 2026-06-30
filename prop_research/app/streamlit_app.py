@@ -28,6 +28,7 @@ def _app_version() -> str:
 
 from prop_research.app.hedge_model import (
     CoverageMode,
+    TrailingRiskMode,
     build_dealing_instruction,
     build_stage_plan,
     calculate_funded_payout_preview,
@@ -65,12 +66,14 @@ def main() -> None:
     prop_firm = _sidebar_rules(st, prop_firm)
     funded_target_enabled = bool(st.session_state.get("funded_profit_target_enabled", True))
     hedge_funded = not bool(st.session_state.get("skip_funded_hedge", False))
+    trailing_risk_mode = _sidebar_trailing_risk_mode(st, prop_firm)
 
     prop_risk_percent = _default_prop_risk_percent(prop_firm)
     recommended_balance = minimum_personal_deposit_for_strict_free_prop(
         config=prop_firm,
         prop_risk_percent=prop_risk_percent,
         hedge_funded=hedge_funded,
+        trailing_risk_mode=trailing_risk_mode,
     ).minimum_personal_deposit
     with settings_summary:
         st.subheader("Риск и личный счет")
@@ -123,6 +126,7 @@ def main() -> None:
             recommended_balance=recommended_balance,
             prop_risk_percent=prop_risk_percent,
             coverage_mode=coverage_mode,
+            trailing_risk_mode=trailing_risk_mode,
             hedge_funded=hedge_funded,
             funded_target_enabled=funded_target_enabled,
             consider_news=consider_news,
@@ -411,6 +415,32 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
     )
 
 
+def _sidebar_trailing_risk_mode(st, prop_firm: PropFirmConfig) -> TrailingRiskMode:
+    if not _has_trailing_drawdown(prop_firm):
+        return TrailingRiskMode.CONSERVATIVE
+    labels = {
+        TrailingRiskMode.TARGET_LOCK: "До фиксации цели",
+        TrailingRiskMode.CURRENT_HIGH_WATERMARK: "По текущему trailing max",
+        TrailingRiskMode.CONSERVATIVE: "Консервативный",
+    }
+    default_mode = (
+        TrailingRiskMode.TARGET_LOCK
+        if _account_type(prop_firm) == "instant"
+        else TrailingRiskMode.CONSERVATIVE
+    )
+    mode_label = st.sidebar.selectbox(
+        "Trailing расчет риска",
+        list(labels.values()),
+        index=list(labels).index(default_mode),
+        key="trailing_risk_mode_label",
+        help="До фиксации цели не резервирует будущий откат после достижения profit target. Консервативный режим резервирует и этот сценарий.",
+    )
+    for mode, label in labels.items():
+        if label == mode_label:
+            return mode
+    return default_mode
+
+
 def _render_trade_calculator(
     st,
     pd,
@@ -420,12 +450,19 @@ def _render_trade_calculator(
     recommended_balance: float,
     prop_risk_percent: float,
     coverage_mode: CoverageMode,
+    trailing_risk_mode: TrailingRiskMode,
     hedge_funded: bool,
     funded_target_enabled: bool,
     consider_news: bool,
     forced_close_r: float,
 ) -> None:
-    stage_plan = build_stage_plan(prop_firm, initial_personal_balance, prop_risk_percent, coverage_mode)
+    stage_plan = build_stage_plan(
+        prop_firm,
+        initial_personal_balance,
+        prop_risk_percent,
+        coverage_mode,
+        trailing_risk_mode=trailing_risk_mode,
+    )
     top_1, top_2, top_3 = st.columns(3)
     top_1.metric("Начальный личный депозит", _money(initial_personal_balance))
     top_2.metric("Рекомендуемый личный депозит", _money(recommended_balance))
@@ -484,6 +521,7 @@ def _render_trade_calculator(
         initial_personal_balance=initial_personal_balance,
         prop_risk_percent=stage_prop_risk_percent,
         mode=coverage_mode,
+        trailing_risk_mode=trailing_risk_mode,
     )
     stage_starting_personal_balance = float(personal_balance_state["Старт личного счета на стадии, $"])
     current_personal_balance = float(personal_balance_state["Текущий баланс личного счета, $"])
@@ -505,6 +543,7 @@ def _render_trade_calculator(
         daily_loss_limit=daily_loss_limit,
         hedge_funded=hedge_funded,
         trailing_high_watermark=trailing_high_watermark,
+        trailing_risk_mode=trailing_risk_mode,
     )
 
     risk_1, risk_2, risk_3 = st.columns(3)
@@ -592,6 +631,7 @@ def _render_trade_calculator(
             funded_profit=payout_profit,
             mode=coverage_mode,
             hedge_funded=hedge_funded,
+            trailing_risk_mode=trailing_risk_mode,
         )
         payout_1, payout_2, payout_3 = st.columns(3)
         payout_profit_label = "Профит на instant" if _account_type(prop_firm) == "instant" else "Профит на funded"
@@ -888,6 +928,14 @@ def _stage_options(config: PropFirmConfig) -> dict[str, str]:
 
 def _account_type(config) -> str:
     return getattr(config, "account_type", "challenge")
+
+
+def _has_trailing_drawdown(config: PropFirmConfig) -> bool:
+    return any(_field(stage, "drawdown_mode", "static") == "trailing" for stage in config.stages) or _field(
+        config.funded,
+        "drawdown_mode",
+        "static",
+    ) == "trailing"
 
 
 def _enabled_tab_labels() -> list[str]:

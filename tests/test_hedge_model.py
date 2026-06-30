@@ -1,5 +1,6 @@
 from prop_research.app.hedge_model import (
     CoverageMode,
+    TrailingRiskMode,
     build_dealing_instruction,
     build_stage_plan,
     calculate_effective_prop_risk,
@@ -175,6 +176,45 @@ def test_stage_plan_accounts_for_trailing_failure_after_high_watermark() -> None
     assert row.required_personal_risk == 100.0
     assert row.personal_balance_after_stage_passed == 0.0
     assert row.personal_balance_if_stage_failed == 800.0
+
+
+def test_target_lock_trailing_mode_reduces_instant_deposit_before_target_is_fixed() -> None:
+    config = PropFirmConfig(
+        challenge_fee=200.0,
+        nominal_balance=100_000.0,
+        stages=[],
+        funded=FundedConfig(
+            profit_target_for_first_payout=5_000.0,
+            max_loss=8_000.0,
+            trader_split=0.8,
+            max_risk_per_trade=1_000.0,
+            drawdown_mode="trailing",
+        ),
+        prop_risk_per_trade=1_000.0,
+        account_type="instant",
+    )
+
+    requirement = minimum_personal_deposit_for_strict_free_prop(
+        config=config,
+        prop_risk_percent=1.0,
+        trailing_risk_mode=TrailingRiskMode.TARGET_LOCK,
+    )
+    trade = calculate_personal_risk_for_trade(
+        config=config,
+        stage_key="funded",
+        current_prop_pnl=0.0,
+        initial_personal_balance=125.0,
+        current_personal_balance=125.0,
+        prop_risk_percent=1.0,
+        mode=CoverageMode.GROW_DEPOSIT_BY_FEE,
+        max_risk_per_trade=1_000.0,
+        trailing_high_watermark=0.0,
+        trailing_risk_mode=TrailingRiskMode.TARGET_LOCK,
+    )
+
+    assert requirement.minimum_personal_deposit == 125.0
+    assert trade["Риск личного, $"] == 25.0
+    assert trade["Loss до потери пропа"] == 8.0
 
 
 def test_dealing_instruction_for_one_and_half_percent_prop_risk() -> None:

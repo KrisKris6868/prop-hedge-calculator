@@ -11,6 +11,12 @@ class CoverageMode(str, Enum):
     BALANCE_COVERS_NEXT_CHALLENGE = "balance_covers_next_challenge"
 
 
+class TrailingRiskMode(str, Enum):
+    CONSERVATIVE = "conservative"
+    TARGET_LOCK = "target_lock"
+    CURRENT_HIGH_WATERMARK = "current_high_watermark"
+
+
 @dataclass(frozen=True)
 class PointRiskRequirement:
     required_personal_risk: float
@@ -69,9 +75,11 @@ def minimum_personal_deposit_for_strict_free_prop(
     config: PropFirmConfig,
     prop_risk_percent: float,
     hedge_funded: bool = True,
+    trailing_risk_mode: TrailingRiskMode | str = TrailingRiskMode.CONSERVATIVE,
 ) -> FreePropRequirement:
     prop_risk_amount = config.nominal_balance * prop_risk_percent / 100
     accumulated_success_path_loss = 0.0
+    trailing_risk_mode = _normalize_trailing_risk_mode(trailing_risk_mode)
 
     stage_specs = [
         (stage.profit_target, stage.max_loss, getattr(stage, "drawdown_mode", "static"))
@@ -94,6 +102,7 @@ def minimum_personal_deposit_for_strict_free_prop(
             target_trades_to_pass=target_trades_to_pass,
             loss_trades_to_fail=loss_trades_to_fail,
             drawdown_mode=drawdown_mode,
+            trailing_risk_mode=trailing_risk_mode,
         )
         required_personal_risk = _required_personal_risk(shortfall_to_strict_target, recovery_trades_to_fail)
         accumulated_success_path_loss += required_personal_risk * target_trades_to_pass
@@ -154,10 +163,12 @@ def build_stage_plan(
     initial_personal_balance: float,
     prop_risk_percent: float,
     mode: CoverageMode,
+    trailing_risk_mode: TrailingRiskMode | str = TrailingRiskMode.CONSERVATIVE,
 ) -> StagePlan:
     prop_risk_amount = config.nominal_balance * prop_risk_percent / 100
     personal_balance = initial_personal_balance
     rows: list[StagePlanRow] = []
+    trailing_risk_mode = _normalize_trailing_risk_mode(trailing_risk_mode)
 
     account_type = getattr(config, "account_type", "challenge")
     stage_specs = [] if account_type == "instant" else [
@@ -185,6 +196,7 @@ def build_stage_plan(
             target_trades_to_pass=target_trades_to_pass,
             loss_trades_to_fail=loss_trades_to_fail,
             drawdown_mode=drawdown_mode,
+            trailing_risk_mode=trailing_risk_mode,
         )
         target_balance = _target_balance(
             challenge_fee=config.challenge_fee,
@@ -195,7 +207,7 @@ def build_stage_plan(
         required_personal_risk = round(_required_personal_risk(shortfall, recovery_trades_to_fail), 2)
         personal_loss_if_passed = required_personal_risk * target_trades_to_pass
         balance_after_pass = personal_balance - personal_loss_if_passed
-        if drawdown_mode == "trailing":
+        if drawdown_mode == "trailing" and trailing_risk_mode == TrailingRiskMode.CONSERVATIVE:
             balance_if_failed = balance_after_pass + required_personal_risk * loss_trades_to_fail
         else:
             balance_if_failed = personal_balance + required_personal_risk * loss_trades_to_fail
@@ -289,12 +301,14 @@ def calculate_personal_balance_from_prop_pnl(
     initial_personal_balance: float,
     prop_risk_percent: float,
     mode: CoverageMode,
+    trailing_risk_mode: TrailingRiskMode | str = TrailingRiskMode.CONSERVATIVE,
 ) -> dict[str, float | str]:
     plan = build_stage_plan(
         config=config,
         initial_personal_balance=initial_personal_balance,
         prop_risk_percent=prop_risk_percent,
         mode=mode,
+        trailing_risk_mode=trailing_risk_mode,
     )
     row = _stage_plan_row_for_key(plan, stage_key)
     prop_risk_amount = plan.prop_risk_amount
@@ -323,6 +337,7 @@ def calculate_personal_risk_for_trade(
     daily_loss_limit: float | None = None,
     hedge_funded: bool = True,
     trailing_high_watermark: float | None = None,
+    trailing_risk_mode: TrailingRiskMode | str = TrailingRiskMode.CONSERVATIVE,
 ) -> dict[str, float | str]:
     full_prop_risk_amount = config.nominal_balance * prop_risk_percent / 100
     stage_name, max_loss, profit_target = _calculator_stage(stage_key, config)
@@ -335,6 +350,7 @@ def calculate_personal_risk_for_trade(
     )
     distance_to_target = max(0.0, profit_target - current_prop_pnl) if target_enabled else None
     drawdown_mode = _stage_drawdown_mode(config, stage_key)
+    trailing_risk_mode = _normalize_trailing_risk_mode(trailing_risk_mode)
     high_watermark = max(current_prop_pnl, trailing_high_watermark or 0.0)
     distance_to_max_loss = _distance_to_max_loss(
         current_prop_pnl=current_prop_pnl,
@@ -355,6 +371,7 @@ def calculate_personal_risk_for_trade(
         drawdown_mode=drawdown_mode,
         trailing_high_watermark=high_watermark,
         target_enabled=target_enabled,
+        trailing_risk_mode=trailing_risk_mode,
     )
     requirement = _required_risk_for_loss_trades(
         challenge_fee=config.challenge_fee,
@@ -416,12 +433,14 @@ def calculate_funded_payout_preview(
     funded_profit: float,
     mode: CoverageMode,
     hedge_funded: bool = True,
+    trailing_risk_mode: TrailingRiskMode | str = TrailingRiskMode.CONSERVATIVE,
 ) -> dict[str, float]:
     plan = build_stage_plan(
         config=config,
         initial_personal_balance=initial_personal_balance,
         prop_risk_percent=prop_risk_percent,
         mode=mode,
+        trailing_risk_mode=trailing_risk_mode,
     )
     funded_row = plan.rows[-1]
     prop_risk_amount = plan.prop_risk_amount
@@ -488,11 +507,14 @@ def _recovery_distance_to_failure_from_point(
     drawdown_mode: str,
     trailing_high_watermark: float,
     target_enabled: bool,
+    trailing_risk_mode: TrailingRiskMode,
 ) -> float:
     if drawdown_mode != "trailing":
         return max(0.0, current_prop_pnl + max_loss)
+    if trailing_risk_mode == TrailingRiskMode.TARGET_LOCK and target_enabled and current_prop_pnl >= profit_target:
+        return 0.0
     future_high_watermark = max(current_prop_pnl, trailing_high_watermark)
-    if target_enabled:
+    if trailing_risk_mode == TrailingRiskMode.CONSERVATIVE and target_enabled:
         future_high_watermark = max(future_high_watermark, profit_target)
     return max(0.0, max_loss - max(0.0, future_high_watermark - current_prop_pnl))
 
@@ -501,8 +523,9 @@ def _recovery_trades_to_failure(
     target_trades_to_pass: float,
     loss_trades_to_fail: float,
     drawdown_mode: str,
+    trailing_risk_mode: TrailingRiskMode,
 ) -> float:
-    if drawdown_mode == "trailing":
+    if drawdown_mode == "trailing" and trailing_risk_mode == TrailingRiskMode.CONSERVATIVE:
         return max(0.0, loss_trades_to_fail - target_trades_to_pass)
     return max(0.0, loss_trades_to_fail)
 
@@ -513,6 +536,15 @@ def _required_personal_risk(shortfall: float, recovery_trades_to_failure: float)
     if recovery_trades_to_failure <= 0:
         return float("inf")
     return shortfall / recovery_trades_to_failure
+
+
+def _normalize_trailing_risk_mode(trailing_risk_mode: TrailingRiskMode | str) -> TrailingRiskMode:
+    if isinstance(trailing_risk_mode, TrailingRiskMode):
+        return trailing_risk_mode
+    try:
+        return TrailingRiskMode(str(trailing_risk_mode))
+    except ValueError:
+        return TrailingRiskMode.CONSERVATIVE
 
 
 def _target_balance(challenge_fee: float, initial_personal_balance: float, mode: CoverageMode) -> float:
