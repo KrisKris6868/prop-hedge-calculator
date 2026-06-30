@@ -449,6 +449,19 @@ def _render_trade_calculator(
     is_drawdown = input_3.checkbox("Это просадка", key="calculator_is_drawdown", on_change=sync_pnl_sign)
     current_prop_pnl = float(st.session_state.get("calculator_current_prop_pnl", current_prop_pnl_raw))
     target_enabled_for_stage = stage_key != "funded" or funded_target_enabled
+    drawdown_mode = _stage_drawdown_mode(prop_firm, stage_key)
+    trailing_high_watermark = max(0.0, current_prop_pnl)
+    if drawdown_mode == "trailing":
+        trailing_key = f"calculator_trailing_high_watermark_{stage_key}"
+        if trailing_key not in st.session_state:
+            st.session_state[trailing_key] = max(0.0, current_prop_pnl)
+        st.session_state[trailing_key] = max(float(st.session_state[trailing_key]), current_prop_pnl)
+        trailing_high_watermark = float(st.session_state[trailing_key])
+        trailing_1, trailing_2 = input_3.columns([2, 1])
+        trailing_1.caption(f"Trailing max: {_money(prop_firm.nominal_balance + trailing_high_watermark)}")
+        if trailing_2.button("Сброс", key=f"reset_trailing_high_watermark_{stage_key}", use_container_width=True):
+            st.session_state[trailing_key] = max(0.0, current_prop_pnl)
+            trailing_high_watermark = float(st.session_state[trailing_key])
 
     personal_balance_state = calculate_personal_balance_from_prop_pnl(
         config=prop_firm,
@@ -477,6 +490,7 @@ def _render_trade_calculator(
         target_enabled=target_enabled_for_stage,
         daily_loss_limit=daily_loss_limit,
         hedge_funded=hedge_funded,
+        trailing_high_watermark=trailing_high_watermark,
     )
 
     risk_1, risk_2, risk_3 = st.columns(3)
@@ -837,6 +851,12 @@ def _stage_daily_loss(config: PropFirmConfig, stage_key: str) -> float | None:
     if stage_key == "funded":
         return _field(config.funded, "daily_loss", None)
     return _field(config.stages[int(stage_key.replace("phase_", "")) - 1], "daily_loss", None)
+
+
+def _stage_drawdown_mode(config: PropFirmConfig, stage_key: str) -> str:
+    if stage_key == "funded":
+        return str(_field(config.funded, "drawdown_mode", "static"))
+    return str(_field(config.stages[int(stage_key.replace("phase_", "")) - 1], "drawdown_mode", "static"))
 
 
 def _field(obj, name: str, default):

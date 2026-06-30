@@ -95,6 +95,7 @@ def _snapshot_for_point(
         stage_index=stage_index,
         stage_pnl=prop_pnl if prop_state == PropState.CHALLENGE_PHASE else 0.0,
         funded_pnl=prop_pnl if prop_state == PropState.FUNDED_PRE_PAYOUT else 0.0,
+        prop_high_watermark_pnl=max(0.0, prop_pnl),
         personal_balance=personal_balance,
         challenge_fees_paid=config.challenge_fee,
         external_topups_paid=0.0,

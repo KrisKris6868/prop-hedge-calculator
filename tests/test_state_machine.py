@@ -118,3 +118,26 @@ def test_instant_account_starts_directly_before_first_payout() -> None:
 
     assert machine.snapshot.prop_state == PropState.FUNDED_PRE_PAYOUT
     assert machine.snapshot.stage_index == 0
+
+
+def test_trailing_drawdown_remembers_high_watermark() -> None:
+    config = PropFirmConfig(
+        challenge_fee=200.0,
+        nominal_balance=100_000.0,
+        stages=[
+            StageConfig(name="phase_1", profit_target=6_000.0, max_loss=4_000.0, drawdown_mode="trailing"),
+        ],
+        funded=FundedConfig(profit_target_for_first_payout=5_000.0, max_loss=4_000.0, trader_split=0.8),
+        prop_risk_per_trade=500.0,
+    )
+    machine = PropStateMachine.start(
+        config=config,
+        initial_personal_balance=200.0,
+        strategy=FixedPersonalRiskStrategy(risk_amount=0.0),
+    )
+
+    machine.apply_trade(prop_win=True)
+    machine.apply_trade(prop_win=True)
+
+    assert machine.snapshot.prop_high_watermark_pnl == 1_000.0
+    assert machine.snapshot.distance_to_max_loss == 4_000.0

@@ -281,6 +281,7 @@ def calculate_personal_risk_for_trade(
     target_enabled: bool = True,
     daily_loss_limit: float | None = None,
     hedge_funded: bool = True,
+    trailing_high_watermark: float | None = None,
 ) -> dict[str, float | str]:
     full_prop_risk_amount = config.nominal_balance * prop_risk_percent / 100
     stage_name, max_loss, profit_target = _calculator_stage(stage_key, config)
@@ -292,7 +293,14 @@ def calculate_personal_risk_for_trade(
         if limit is not None
     )
     distance_to_target = max(0.0, profit_target - current_prop_pnl) if target_enabled else None
-    distance_to_max_loss = max(0.0, current_prop_pnl + max_loss)
+    drawdown_mode = _stage_drawdown_mode(config, stage_key)
+    high_watermark = max(current_prop_pnl, trailing_high_watermark or 0.0)
+    distance_to_max_loss = _distance_to_max_loss(
+        current_prop_pnl=current_prop_pnl,
+        max_loss=max_loss,
+        drawdown_mode=drawdown_mode,
+        trailing_high_watermark=high_watermark,
+    )
     effective_prop_risk_amount = calculate_effective_prop_risk(
         max_risk_per_trade=max_trade_risk,
         distance_to_target=distance_to_target,
@@ -304,7 +312,7 @@ def calculate_personal_risk_for_trade(
         initial_personal_balance=initial_personal_balance,
         current_personal_balance=current_personal_balance,
         current_prop_pnl=current_prop_pnl,
-        max_loss=max_loss,
+        max_loss=distance_to_max_loss - current_prop_pnl,
         prop_risk_amount=effective_prop_risk_amount,
         mode=mode,
     )
@@ -401,6 +409,25 @@ def _configured_max_risk_per_trade(config: PropFirmConfig, stage_key: str) -> fl
         return getattr(config.funded, "max_risk_per_trade", None)
     stage_number = int(stage_key.replace("phase_", ""))
     return getattr(config.stages[stage_number - 1], "max_risk_per_trade", None)
+
+
+def _stage_drawdown_mode(config: PropFirmConfig, stage_key: str) -> str:
+    if stage_key == "funded":
+        return getattr(config.funded, "drawdown_mode", "static")
+    stage_number = int(stage_key.replace("phase_", ""))
+    return getattr(config.stages[stage_number - 1], "drawdown_mode", "static")
+
+
+def _distance_to_max_loss(
+    current_prop_pnl: float,
+    max_loss: float,
+    drawdown_mode: str,
+    trailing_high_watermark: float,
+) -> float:
+    if drawdown_mode == "trailing":
+        failure_pnl = trailing_high_watermark - max_loss
+        return max(0.0, current_prop_pnl - failure_pnl)
+    return max(0.0, current_prop_pnl + max_loss)
 
 
 def _target_balance(challenge_fee: float, initial_personal_balance: float, mode: CoverageMode) -> float:

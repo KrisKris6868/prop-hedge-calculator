@@ -15,6 +15,7 @@ class StateSnapshot:
     stage_index: int
     stage_pnl: float
     funded_pnl: float
+    prop_high_watermark_pnl: float
     personal_balance: float
     challenge_fees_paid: float
     external_topups_paid: float
@@ -33,6 +34,7 @@ class StateSnapshot:
             stage_index=0,
             stage_pnl=0.0,
             funded_pnl=0.0,
+            prop_high_watermark_pnl=0.0,
             personal_balance=initial_personal_balance,
             challenge_fees_paid=config.challenge_fee,
             external_topups_paid=max(0.0, initial_personal_balance),
@@ -66,6 +68,15 @@ class StateSnapshot:
         return stage.max_loss
 
     @property
+    def active_drawdown_mode(self) -> str:
+        if self.prop_state == PropState.FUNDED_PRE_PAYOUT:
+            return getattr(self.config.funded, "drawdown_mode", "static")
+        stage = self.current_stage
+        if stage is None:
+            return "static"
+        return getattr(stage, "drawdown_mode", "static")
+
+    @property
     def active_pnl(self) -> float:
         if self.prop_state == PropState.FUNDED_PRE_PAYOUT:
             return self.funded_pnl
@@ -77,6 +88,9 @@ class StateSnapshot:
 
     @property
     def distance_to_max_loss(self) -> float:
+        if self.active_drawdown_mode == "trailing":
+            failure_pnl = self.prop_high_watermark_pnl - self.active_max_loss
+            return max(0.0, self.active_pnl - failure_pnl)
         return max(0.0, self.active_pnl + self.active_max_loss)
 
     @property

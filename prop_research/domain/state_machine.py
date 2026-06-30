@@ -50,15 +50,17 @@ class PropStateMachine:
     def _apply_challenge_trade(self, prop_pnl: float, personal_balance: float) -> None:
         pnl = self.snapshot.stage_pnl + prop_pnl
         stage = self.snapshot.config.stages[self.snapshot.stage_index]
+        high_watermark = max(self.snapshot.prop_high_watermark_pnl, pnl)
         base = replace(
             self.snapshot,
             stage_pnl=pnl,
+            prop_high_watermark_pnl=high_watermark,
             personal_balance=personal_balance,
             trades_in_stage=self.snapshot.trades_in_stage + 1,
             total_trades=self.snapshot.total_trades + 1,
         )
 
-        if pnl <= -stage.max_loss:
+        if base.distance_to_max_loss <= 0:
             self.snapshot = self._settle_failure(base)
             return
 
@@ -70,25 +72,28 @@ class PropStateMachine:
                     prop_state=PropState.FUNDED_PRE_PAYOUT,
                     stage_index=next_index,
                     stage_pnl=0.0,
+                    prop_high_watermark_pnl=0.0,
                     trades_in_stage=0,
                 )
             else:
-                self.snapshot = replace(base, stage_index=next_index, stage_pnl=0.0, trades_in_stage=0)
+                self.snapshot = replace(base, stage_index=next_index, stage_pnl=0.0, prop_high_watermark_pnl=0.0, trades_in_stage=0)
             return
 
         self.snapshot = self._refresh_personal_state(base)
 
     def _apply_funded_trade(self, prop_pnl: float, personal_balance: float) -> None:
         pnl = self.snapshot.funded_pnl + prop_pnl
+        high_watermark = max(self.snapshot.prop_high_watermark_pnl, pnl)
         base = replace(
             self.snapshot,
             funded_pnl=pnl,
+            prop_high_watermark_pnl=high_watermark,
             personal_balance=personal_balance,
             trades_in_stage=self.snapshot.trades_in_stage + 1,
             total_trades=self.snapshot.total_trades + 1,
         )
 
-        if pnl <= -self.snapshot.config.funded.max_loss:
+        if base.distance_to_max_loss <= 0:
             self.snapshot = self._settle_failure(base)
             return
 
@@ -131,4 +136,3 @@ class PropStateMachine:
         else:
             personal_state = PersonalState.PERSONAL_ACTIVE
         return replace(snapshot, personal_state=personal_state)
-

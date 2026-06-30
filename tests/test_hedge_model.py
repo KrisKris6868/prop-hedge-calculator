@@ -256,6 +256,38 @@ def test_effective_prop_risk_ignores_target_when_target_is_disabled() -> None:
     ) == 1_900.0
 
 
+def test_trade_calculator_uses_trailing_high_watermark_for_max_loss_distance() -> None:
+    config = PropFirmConfig(
+        challenge_fee=200.0,
+        nominal_balance=100_000.0,
+        stages=[
+            StageConfig(
+                name="phase_1",
+                profit_target=6_000.0,
+                max_loss=4_000.0,
+                max_risk_per_trade=1_000.0,
+                drawdown_mode="trailing",
+            ),
+        ],
+        funded=FundedConfig(profit_target_for_first_payout=5_000.0, max_loss=4_000.0, trader_split=0.8),
+        prop_risk_per_trade=1_000.0,
+    )
+
+    result = calculate_personal_risk_for_trade(
+        config=config,
+        stage_key="phase_1",
+        current_prop_pnl=1_000.0,
+        initial_personal_balance=200.0,
+        current_personal_balance=200.0,
+        prop_risk_percent=1.0,
+        mode=CoverageMode.GROW_DEPOSIT_BY_FEE,
+        max_risk_per_trade=1_000.0,
+        trailing_high_watermark=1_000.0,
+    )
+
+    assert result["distance_to_max_loss"] == 4_000.0
+
+
 def test_trade_calculator_uses_effective_risk_near_profit_target() -> None:
     result = calculate_personal_risk_for_trade(
         config=make_config(),
