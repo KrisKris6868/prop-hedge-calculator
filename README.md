@@ -3,9 +3,7 @@ title: Prop Hedge Calculator
 emoji: 📊
 colorFrom: red
 colorTo: gray
-sdk: streamlit
-sdk_version: 1.36.0
-app_file: app.py
+sdk: docker
 pinned: false
 license: mit
 ---
