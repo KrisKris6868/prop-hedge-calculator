@@ -314,6 +314,22 @@ def test_personal_balance_is_derived_from_prop_pnl_on_current_stage() -> None:
     assert result["Изменение личного счета на стадии, $"] == -75.0
 
 
+def test_personal_balance_can_ignore_pnl_that_happened_before_hedge_started() -> None:
+    result = calculate_personal_balance_from_prop_pnl(
+        config=make_config(),
+        stage_key="phase_1",
+        current_prop_pnl=-4_000.0,
+        initial_personal_balance=200.0,
+        prop_risk_percent=1.0,
+        mode=CoverageMode.GROW_DEPOSIT_BY_FEE,
+        include_current_prop_pnl=False,
+    )
+
+    values = list(result.values())
+    assert values[4] == 200.0
+    assert values[3] == 0.0
+
+
 def test_personal_balance_includes_previous_stage_losses() -> None:
     result = calculate_personal_balance_from_prop_pnl(
         config=make_config(),

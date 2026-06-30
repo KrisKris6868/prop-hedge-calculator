@@ -503,6 +503,12 @@ def _render_trade_calculator(
         key="calculator_current_prop_pnl",
     )
     current_prop_pnl = float(st.session_state.get("calculator_current_prop_pnl", current_prop_pnl_raw))
+    pnl_basis_label = input_3.selectbox(
+        "Как учитывать этот PnL",
+        ["PnL уже был до хеджа", "Хедж был с начала счета"],
+        key="calculator_pnl_basis",
+    )
+    include_current_prop_pnl = pnl_basis_label == "Хедж был с начала счета"
     target_enabled_for_stage = stage_key != "funded" or funded_target_enabled
     drawdown_mode = _stage_drawdown_mode(prop_firm, stage_key)
     trailing_high_watermark = max(0.0, current_prop_pnl)
@@ -522,12 +528,29 @@ def _render_trade_calculator(
         prop_risk_percent=stage_prop_risk_percent,
         mode=coverage_mode,
         trailing_risk_mode=trailing_risk_mode,
+        include_current_prop_pnl=include_current_prop_pnl,
     )
     stage_starting_personal_balance = float(personal_balance_state["Старт личного счета на стадии, $"])
     current_personal_balance = float(personal_balance_state["Текущий баланс личного счета, $"])
     if stage_key == "funded" and not hedge_funded:
         current_personal_balance = stage_starting_personal_balance
     personal_spent = _personal_spent(stage_starting_personal_balance, current_personal_balance)
+    missed_hedge_gain = 0.0
+    if not include_current_prop_pnl and current_prop_pnl < 0:
+        hedged_balance_state = calculate_personal_balance_from_prop_pnl(
+            config=prop_firm,
+            stage_key=stage_key,
+            current_prop_pnl=current_prop_pnl,
+            initial_personal_balance=initial_personal_balance,
+            prop_risk_percent=stage_prop_risk_percent,
+            mode=coverage_mode,
+            trailing_risk_mode=trailing_risk_mode,
+            include_current_prop_pnl=True,
+        )
+        missed_hedge_gain = max(
+            0.0,
+            float(hedged_balance_state["Текущий баланс личного счета, $"]) - current_personal_balance,
+        )
 
     daily_loss_limit = _stage_daily_loss(prop_firm, stage_key)
     trade = calculate_personal_risk_for_trade(
@@ -582,6 +605,14 @@ def _render_trade_calculator(
             key=f"reset_trailing_account_{stage_key}",
             use_container_width=True,
             on_click=reset_trailing_account,
+        )
+
+    if missed_hedge_gain > 0:
+        st.warning(
+            _escape_markdown_dollars(
+                f"Просадка уже была до хеджа: в личный депозит нужно заложить еще {_money(missed_hedge_gain)}, "
+                "если хочешь сохранить риск как при хедже с начала счета."
+            )
         )
 
     consistency_status = _consistency_status_display(

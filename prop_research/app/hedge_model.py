@@ -302,6 +302,7 @@ def calculate_personal_balance_from_prop_pnl(
     prop_risk_percent: float,
     mode: CoverageMode,
     trailing_risk_mode: TrailingRiskMode | str = TrailingRiskMode.CONSERVATIVE,
+    include_current_prop_pnl: bool = True,
 ) -> dict[str, float | str]:
     plan = build_stage_plan(
         config=config,
@@ -312,7 +313,7 @@ def calculate_personal_balance_from_prop_pnl(
     )
     row = _stage_plan_row_for_key(plan, stage_key)
     prop_risk_amount = plan.prop_risk_amount
-    pnl_in_prop_r_units = current_prop_pnl / prop_risk_amount if prop_risk_amount > 0 else 0.0
+    pnl_in_prop_r_units = current_prop_pnl / prop_risk_amount if prop_risk_amount > 0 and include_current_prop_pnl else 0.0
     personal_change = -pnl_in_prop_r_units * row.required_personal_risk
     current_personal_balance = row.starting_personal_balance + personal_change
     return {
