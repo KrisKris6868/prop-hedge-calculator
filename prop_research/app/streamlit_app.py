@@ -1,12 +1,30 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import os
 from pathlib import Path
+import subprocess
 import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+
+def _app_version() -> str:
+    for env_name in ("GITHUB_SHA", "SOURCE_VERSION", "STREAMLIT_GIT_COMMIT"):
+        value = os.environ.get(env_name)
+        if value:
+            return value[:7]
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=PROJECT_ROOT,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except Exception:
+        return "unknown"
 
 from prop_research.app.hedge_model import (
     CoverageMode,
@@ -37,6 +55,7 @@ def main() -> None:
     if st.sidebar.button("Сбросить настройки", use_container_width=True):
         st.session_state.clear()
         st.rerun()
+    st.sidebar.caption(f"Версия: {_app_version()}")
 
     with st.sidebar.expander("Расширенные настройки", expanded=False):
         config_path = st.text_input("Файл правил", "configs/example_prop_firm.json")
