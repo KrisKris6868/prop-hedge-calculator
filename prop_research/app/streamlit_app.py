@@ -45,11 +45,13 @@ def main() -> None:
     prop_firm = load_prop_firm_config(Path(config_path))
     prop_firm = _sidebar_rules(st, prop_firm)
     funded_target_enabled = bool(st.session_state.get("funded_profit_target_enabled", True))
+    hedge_funded = not bool(st.session_state.get("skip_funded_hedge", False))
 
     prop_risk_percent = _default_prop_risk_percent(prop_firm)
     recommended_balance = minimum_personal_deposit_for_strict_free_prop(
         config=prop_firm,
         prop_risk_percent=prop_risk_percent,
+        hedge_funded=hedge_funded,
     ).minimum_personal_deposit
     with settings_summary:
         st.subheader("Риск и личный счет")
@@ -82,7 +84,7 @@ def main() -> None:
             if coverage_label == "Личный депозит растет на цену челленджа"
             else CoverageMode.BALANCE_COVERS_NEXT_CHALLENGE
         )
-        hedge_funded = not st.checkbox("Не хеджировать выплатной этап", value=False)
+        hedge_funded = not st.checkbox("Не хеджировать выплатной этап", value=not hedge_funded, key="skip_funded_hedge")
 
     with st.sidebar.expander("Новости", expanded=False):
         consider_news = st.checkbox("Учитывать новости", value=False)
@@ -900,6 +902,14 @@ def _make_stage_config(**kwargs) -> StageConfig:
 
 
 def _make_funded_config(**kwargs) -> FundedConfig:
+    kwargs = dict(kwargs)
+    kwargs["profit_target_for_first_payout"] = _positive_amount(float(kwargs["profit_target_for_first_payout"]), 1.0)
+    kwargs["max_loss"] = _positive_amount(float(kwargs["max_loss"]), 1.0)
+    if kwargs.get("daily_loss") is not None:
+        kwargs["daily_loss"] = _positive_amount(float(kwargs["daily_loss"]), kwargs["max_loss"] / 2)
+    kwargs["trader_split"] = min(1.0, max(0.01, float(kwargs["trader_split"])))
+    if kwargs.get("max_risk_per_trade") is not None:
+        kwargs["max_risk_per_trade"] = _positive_amount(float(kwargs["max_risk_per_trade"]), 1.0)
     try:
         return FundedConfig(**kwargs)
     except TypeError:
@@ -938,7 +948,9 @@ def _from_amount(value: float, mode: str, nominal_balance: float) -> float:
 def _positive_amount(value: float, fallback: float) -> float:
     if value > 0:
         return value
-    return fallback
+    if fallback > 0:
+        return fallback
+    return 1.0
 
 
 if __name__ == "__main__":

@@ -68,6 +68,7 @@ def calculate_effective_prop_risk(
 def minimum_personal_deposit_for_strict_free_prop(
     config: PropFirmConfig,
     prop_risk_percent: float,
+    hedge_funded: bool = True,
 ) -> FreePropRequirement:
     prop_risk_amount = config.nominal_balance * prop_risk_percent / 100
     accumulated_success_path_loss = 0.0
@@ -76,7 +77,8 @@ def minimum_personal_deposit_for_strict_free_prop(
         (stage.profit_target, stage.max_loss)
         for stage in config.stages
     ]
-    stage_specs.append((config.funded.profit_target_for_first_payout, config.funded.max_loss))
+    if hedge_funded:
+        stage_specs.append((config.funded.profit_target_for_first_payout, config.funded.max_loss))
 
     for profit_target, max_loss in stage_specs:
         shortfall_to_strict_target = config.challenge_fee + accumulated_success_path_loss

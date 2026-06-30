@@ -92,6 +92,17 @@ def test_minimum_personal_deposit_for_strict_free_prop() -> None:
     assert requirement.total_success_path_personal_loss == 795.31
 
 
+def test_minimum_personal_deposit_excludes_funded_when_not_hedged() -> None:
+    requirement = minimum_personal_deposit_for_strict_free_prop(
+        config=make_config(),
+        prop_risk_percent=1.0,
+        hedge_funded=False,
+    )
+
+    assert requirement.minimum_personal_deposit == 412.5
+    assert requirement.total_success_path_personal_loss == 412.5
+
+
 def test_minimum_personal_deposit_recalculates_for_one_phase_challenge() -> None:
     config = PropFirmConfig(
         challenge_fee=200.0,

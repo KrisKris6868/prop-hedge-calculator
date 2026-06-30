@@ -133,4 +133,5 @@ def test_make_prop_firm_config_is_backward_compatible_without_account_type(monke
 def test_positive_amount_falls_back_from_stale_zero_widget_state() -> None:
     assert _positive_amount(0.0, fallback=8_000.0) == 8_000.0
     assert _positive_amount(-1.0, fallback=8_000.0) == 8_000.0
+    assert _positive_amount(0.0, fallback=0.0) == 1.0
     assert _positive_amount(3_000.0, fallback=8_000.0) == 3_000.0
