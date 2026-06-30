@@ -123,6 +123,60 @@ def test_minimum_personal_deposit_recalculates_for_one_phase_challenge() -> None
     assert requirement.total_capital_before_payout == 568.75
 
 
+def test_minimum_personal_deposit_accounts_for_trailing_failure_after_high_watermark() -> None:
+    config = PropFirmConfig(
+        challenge_fee=200.0,
+        nominal_balance=100_000.0,
+        stages=[
+            StageConfig(
+                name="phase_1",
+                profit_target=6_000.0,
+                max_loss=8_000.0,
+                drawdown_mode="trailing",
+            ),
+        ],
+        funded=FundedConfig(profit_target_for_first_payout=5_000.0, max_loss=8_000.0, trader_split=0.8),
+        prop_risk_per_trade=1_000.0,
+    )
+
+    requirement = minimum_personal_deposit_for_strict_free_prop(
+        config=config,
+        prop_risk_percent=1.0,
+        hedge_funded=False,
+    )
+
+    assert requirement.minimum_personal_deposit == 600.0
+
+
+def test_stage_plan_accounts_for_trailing_failure_after_high_watermark() -> None:
+    config = PropFirmConfig(
+        challenge_fee=200.0,
+        nominal_balance=100_000.0,
+        stages=[
+            StageConfig(
+                name="phase_1",
+                profit_target=6_000.0,
+                max_loss=8_000.0,
+                drawdown_mode="trailing",
+            ),
+        ],
+        funded=FundedConfig(profit_target_for_first_payout=5_000.0, max_loss=8_000.0, trader_split=0.8),
+        prop_risk_per_trade=1_000.0,
+    )
+
+    plan = build_stage_plan(
+        config=config,
+        initial_personal_balance=600.0,
+        prop_risk_percent=1.0,
+        mode=CoverageMode.GROW_DEPOSIT_BY_FEE,
+    )
+
+    row = plan.rows[0]
+    assert row.required_personal_risk == 100.0
+    assert row.personal_balance_after_stage_passed == 0.0
+    assert row.personal_balance_if_stage_failed == 800.0
+
+
 def test_dealing_instruction_for_one_and_half_percent_prop_risk() -> None:
     instruction = build_dealing_instruction(
         config=make_config(),
@@ -297,6 +351,38 @@ def test_trade_calculator_uses_trailing_high_watermark_for_max_loss_distance() -
     )
 
     assert result["distance_to_max_loss"] == 4_000.0
+
+
+def test_trade_calculator_uses_trailing_recovery_distance_before_target() -> None:
+    config = PropFirmConfig(
+        challenge_fee=200.0,
+        nominal_balance=100_000.0,
+        stages=[],
+        funded=FundedConfig(
+            profit_target_for_first_payout=5_000.0,
+            max_loss=8_000.0,
+            trader_split=0.8,
+            max_risk_per_trade=1_000.0,
+            drawdown_mode="trailing",
+        ),
+        prop_risk_per_trade=1_000.0,
+        account_type="instant",
+    )
+
+    result = calculate_personal_risk_for_trade(
+        config=config,
+        stage_key="funded",
+        current_prop_pnl=0.0,
+        initial_personal_balance=333.33,
+        current_personal_balance=333.33,
+        prop_risk_percent=1.0,
+        mode=CoverageMode.GROW_DEPOSIT_BY_FEE,
+        max_risk_per_trade=1_000.0,
+        trailing_high_watermark=0.0,
+    )
+
+    assert result["Риск личного, $"] == 66.67
+    assert result["Ожидаемый личный счет при потере пропа, $"] == 533.33
 
 
 def test_trade_calculator_uses_effective_risk_near_profit_target() -> None:

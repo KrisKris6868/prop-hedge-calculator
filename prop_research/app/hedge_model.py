@@ -74,17 +74,28 @@ def minimum_personal_deposit_for_strict_free_prop(
     accumulated_success_path_loss = 0.0
 
     stage_specs = [
-        (stage.profit_target, stage.max_loss)
+        (stage.profit_target, stage.max_loss, getattr(stage, "drawdown_mode", "static"))
         for stage in config.stages
     ]
     if hedge_funded:
-        stage_specs.append((config.funded.profit_target_for_first_payout, config.funded.max_loss))
+        stage_specs.append(
+            (
+                config.funded.profit_target_for_first_payout,
+                config.funded.max_loss,
+                getattr(config.funded, "drawdown_mode", "static"),
+            )
+        )
 
-    for profit_target, max_loss in stage_specs:
+    for profit_target, max_loss, drawdown_mode in stage_specs:
         shortfall_to_strict_target = config.challenge_fee + accumulated_success_path_loss
         loss_trades_to_fail = max_loss / prop_risk_amount
         target_trades_to_pass = profit_target / prop_risk_amount
-        required_personal_risk = shortfall_to_strict_target / loss_trades_to_fail
+        recovery_trades_to_fail = _recovery_trades_to_failure(
+            target_trades_to_pass=target_trades_to_pass,
+            loss_trades_to_fail=loss_trades_to_fail,
+            drawdown_mode=drawdown_mode,
+        )
+        required_personal_risk = _required_personal_risk(shortfall_to_strict_target, recovery_trades_to_fail)
         accumulated_success_path_loss += required_personal_risk * target_trades_to_pass
 
     minimum_deposit = accumulated_success_path_loss
@@ -107,13 +118,29 @@ def required_risk_at_point(
 ) -> PointRiskRequirement:
     distance_to_failure = max(0.0, current_prop_pnl + max_loss)
     loss_trades_to_failure = distance_to_failure / prop_risk_amount if prop_risk_amount > 0 else 0.0
+    return _required_risk_for_loss_trades(
+        challenge_fee=challenge_fee,
+        initial_personal_balance=initial_personal_balance,
+        current_personal_balance=current_personal_balance,
+        loss_trades_to_failure=loss_trades_to_failure,
+        mode=mode,
+    )
+
+
+def _required_risk_for_loss_trades(
+    challenge_fee: float,
+    initial_personal_balance: float,
+    current_personal_balance: float,
+    loss_trades_to_failure: float,
+    mode: CoverageMode,
+) -> PointRiskRequirement:
     target_balance = _target_balance(
         challenge_fee=challenge_fee,
         initial_personal_balance=initial_personal_balance,
         mode=mode,
     )
     shortfall = max(0.0, target_balance - current_personal_balance)
-    required_risk = shortfall / loss_trades_to_failure if loss_trades_to_failure > 0 else 0.0
+    required_risk = _required_personal_risk(shortfall, loss_trades_to_failure)
     return PointRiskRequirement(
         required_personal_risk=round(required_risk, 2),
         loss_trades_to_failure=round(loss_trades_to_failure, 2),
@@ -134,7 +161,12 @@ def build_stage_plan(
 
     account_type = getattr(config, "account_type", "challenge")
     stage_specs = [] if account_type == "instant" else [
-        (f"Этап {index + 1}: {stage.name}", stage.profit_target, stage.max_loss)
+        (
+            f"Этап {index + 1}: {stage.name}",
+            stage.profit_target,
+            stage.max_loss,
+            getattr(stage, "drawdown_mode", "static"),
+        )
         for index, stage in enumerate(config.stages)
     ]
     stage_specs.append(
@@ -142,24 +174,31 @@ def build_stage_plan(
             "Instant счет" if account_type == "instant" else "Funded до первой выплаты",
             config.funded.profit_target_for_first_payout,
             config.funded.max_loss,
+            getattr(config.funded, "drawdown_mode", "static"),
         )
     )
 
-    for stage_name, profit_target, max_loss in stage_specs:
-        requirement = required_risk_at_point(
-            challenge_fee=config.challenge_fee,
-            initial_personal_balance=initial_personal_balance,
-            current_personal_balance=personal_balance,
-            current_prop_pnl=0.0,
-            max_loss=max_loss,
-            prop_risk_amount=prop_risk_amount,
-            mode=mode,
-        )
+    for stage_name, profit_target, max_loss, drawdown_mode in stage_specs:
         target_trades_to_pass = profit_target / prop_risk_amount
         loss_trades_to_fail = max_loss / prop_risk_amount
-        personal_loss_if_passed = requirement.required_personal_risk * target_trades_to_pass
+        recovery_trades_to_fail = _recovery_trades_to_failure(
+            target_trades_to_pass=target_trades_to_pass,
+            loss_trades_to_fail=loss_trades_to_fail,
+            drawdown_mode=drawdown_mode,
+        )
+        target_balance = _target_balance(
+            challenge_fee=config.challenge_fee,
+            initial_personal_balance=initial_personal_balance,
+            mode=mode,
+        )
+        shortfall = max(0.0, target_balance - personal_balance)
+        required_personal_risk = round(_required_personal_risk(shortfall, recovery_trades_to_fail), 2)
+        personal_loss_if_passed = required_personal_risk * target_trades_to_pass
         balance_after_pass = personal_balance - personal_loss_if_passed
-        balance_if_failed = personal_balance + requirement.required_personal_risk * loss_trades_to_fail
+        if drawdown_mode == "trailing":
+            balance_if_failed = balance_after_pass + required_personal_risk * loss_trades_to_fail
+        else:
+            balance_if_failed = personal_balance + required_personal_risk * loss_trades_to_fail
 
         rows.append(
             StagePlanRow(
@@ -169,7 +208,7 @@ def build_stage_plan(
                 target_trades_to_pass=round(target_trades_to_pass, 2),
                 loss_trades_to_fail=round(loss_trades_to_fail, 2),
                 starting_personal_balance=round(personal_balance, 2),
-                required_personal_risk=requirement.required_personal_risk,
+                required_personal_risk=required_personal_risk,
                 personal_loss_if_stage_passed=round(personal_loss_if_passed, 2),
                 personal_balance_after_stage_passed=round(balance_after_pass, 2),
                 personal_balance_if_stage_failed=round(balance_if_failed, 2),
@@ -309,13 +348,23 @@ def calculate_personal_risk_for_trade(
         distance_to_max_loss=distance_to_max_loss,
         daily_loss_limit=daily_loss_limit,
     )
-    requirement = required_risk_at_point(
+    recovery_distance_to_failure = _recovery_distance_to_failure_from_point(
+        current_prop_pnl=current_prop_pnl,
+        profit_target=profit_target,
+        max_loss=max_loss,
+        drawdown_mode=drawdown_mode,
+        trailing_high_watermark=high_watermark,
+        target_enabled=target_enabled,
+    )
+    requirement = _required_risk_for_loss_trades(
         challenge_fee=config.challenge_fee,
         initial_personal_balance=initial_personal_balance,
         current_personal_balance=current_personal_balance,
-        current_prop_pnl=current_prop_pnl,
-        max_loss=distance_to_max_loss - current_prop_pnl,
-        prop_risk_amount=effective_prop_risk_amount,
+        loss_trades_to_failure=(
+            recovery_distance_to_failure / effective_prop_risk_amount
+            if effective_prop_risk_amount > 0
+            else 0.0
+        ),
         mode=mode,
     )
     personal_risk = 0.0 if stage_key == "funded" and not hedge_funded else requirement.required_personal_risk
@@ -430,6 +479,40 @@ def _distance_to_max_loss(
         failure_pnl = trailing_high_watermark - max_loss
         return max(0.0, current_prop_pnl - failure_pnl)
     return max(0.0, current_prop_pnl + max_loss)
+
+
+def _recovery_distance_to_failure_from_point(
+    current_prop_pnl: float,
+    profit_target: float,
+    max_loss: float,
+    drawdown_mode: str,
+    trailing_high_watermark: float,
+    target_enabled: bool,
+) -> float:
+    if drawdown_mode != "trailing":
+        return max(0.0, current_prop_pnl + max_loss)
+    future_high_watermark = max(current_prop_pnl, trailing_high_watermark)
+    if target_enabled:
+        future_high_watermark = max(future_high_watermark, profit_target)
+    return max(0.0, max_loss - max(0.0, future_high_watermark - current_prop_pnl))
+
+
+def _recovery_trades_to_failure(
+    target_trades_to_pass: float,
+    loss_trades_to_fail: float,
+    drawdown_mode: str,
+) -> float:
+    if drawdown_mode == "trailing":
+        return max(0.0, loss_trades_to_fail - target_trades_to_pass)
+    return max(0.0, loss_trades_to_fail)
+
+
+def _required_personal_risk(shortfall: float, recovery_trades_to_failure: float) -> float:
+    if shortfall <= 0:
+        return 0.0
+    if recovery_trades_to_failure <= 0:
+        return float("inf")
+    return shortfall / recovery_trades_to_failure
 
 
 def _target_balance(challenge_fee: float, initial_personal_balance: float, mode: CoverageMode) -> float:
