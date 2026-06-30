@@ -24,7 +24,7 @@ def _app_version() -> str:
             text=True,
         ).strip()
     except Exception:
-        return "unknown"
+        return "online"
 
 from prop_research.app.hedge_model import (
     CoverageMode,
