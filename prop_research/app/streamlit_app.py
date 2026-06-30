@@ -130,7 +130,7 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
         step=1_000.0,
     )
 
-    default_account_type_index = 2 if prop_firm.account_type == "instant" else 1 if len(prop_firm.stages) > 1 else 0
+    default_account_type_index = 2 if _account_type(prop_firm) == "instant" else 1 if len(prop_firm.stages) > 1 else 0
     account_type_label = st.sidebar.selectbox(
         "Тип счета",
         ["1 фаза", "2 фазы", "Инстант"],
@@ -400,7 +400,7 @@ def _render_trade_calculator(
     top_1, top_2, top_3 = st.columns(3)
     top_1.metric("Начальный личный депозит", _money(initial_personal_balance))
     top_2.metric("Рекомендуемый личный депозит", _money(recommended_balance))
-    top_3.metric("Цена счета" if prop_firm.account_type == "instant" else "Цена челленджа", _money(prop_firm.challenge_fee))
+    top_3.metric("Цена счета" if _account_type(prop_firm) == "instant" else "Цена челленджа", _money(prop_firm.challenge_fee))
 
     input_1, input_2, input_3 = st.columns(3)
     stage_key = input_1.selectbox("Текущая стадия", list(stage_options.keys()), format_func=stage_options.get)
@@ -529,7 +529,7 @@ def _render_trade_calculator(
             hedge_funded=hedge_funded,
         )
         payout_1, payout_2, payout_3 = st.columns(3)
-        payout_profit_label = "Профит на instant" if prop_firm.account_type == "instant" else "Профит на funded"
+        payout_profit_label = "Профит на instant" if _account_type(prop_firm) == "instant" else "Профит на funded"
         payout_1.metric(payout_profit_label, _money(payout["Профит на funded, $"]))
         payout_2.metric("К выплате после сплита", _money(payout["К выплате после сплита, $"]))
         payout_3.metric("Чистыми", _money(payout["Чистыми после личных затрат, $"]))
@@ -780,7 +780,7 @@ def _stage_max_risk(config: PropFirmConfig, stage_key: str) -> float:
 
 
 def _default_prop_risk_amount(config: PropFirmConfig) -> float:
-    if config.account_type == "instant":
+    if _account_type(config) == "instant":
         return _stage_max_risk(config, "funded")
     return _stage_max_risk(config, "phase_1")
 
@@ -807,18 +807,22 @@ def _hedge_summary_display(multiplier: float, personal_percent: float) -> str:
 
 
 def _default_prop_risk_percent(config: PropFirmConfig) -> float:
-    if config.account_type == "instant":
+    if _account_type(config) == "instant":
         return _stage_risk_percent(config, "funded")
     return _stage_risk_percent(config, "phase_1")
 
 
 def _stage_options(config: PropFirmConfig) -> dict[str, str]:
-    if config.account_type == "instant":
+    if _account_type(config) == "instant":
         return {"funded": "Instant счет"}
     return {
         **{f"phase_{index + 1}": f"Этап {index + 1}: {stage.name}" for index, stage in enumerate(config.stages)},
         "funded": "Funded до первой выплаты",
     }
+
+
+def _account_type(config) -> str:
+    return getattr(config, "account_type", "challenge")
 
 
 def _enabled_tab_labels() -> list[str]:

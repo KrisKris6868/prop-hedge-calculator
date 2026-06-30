@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from prop_research.app.streamlit_app import (
     _default_prop_risk_percent,
     _enabled_tab_labels,
@@ -85,3 +87,16 @@ def test_removed_tabs_are_not_rendered() -> None:
         "Симуляции / Monte Carlo",
         "Принципы выбора пропа",
     ]
+
+
+def test_stage_options_are_backward_compatible_with_old_config_objects() -> None:
+    config = SimpleNamespace(
+        stages=[
+            StageConfig(name="phase_1", profit_target=6_000.0, max_loss=8_000.0),
+        ],
+    )
+
+    assert _stage_options(config) == {
+        "phase_1": "Этап 1: phase_1",
+        "funded": "Funded до первой выплаты",
+    }

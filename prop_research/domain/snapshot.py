@@ -24,7 +24,7 @@ class StateSnapshot:
 
     @classmethod
     def initial(cls, config: PropFirmConfig, initial_personal_balance: float) -> StateSnapshot:
-        is_instant = config.account_type == "instant"
+        is_instant = getattr(config, "account_type", "challenge") == "instant"
         return cls(
             config=config,
             prop_state=PropState.FUNDED_PRE_PAYOUT if is_instant else PropState.CHALLENGE_PHASE,

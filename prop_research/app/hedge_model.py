@@ -130,13 +130,14 @@ def build_stage_plan(
     personal_balance = initial_personal_balance
     rows: list[StagePlanRow] = []
 
-    stage_specs = [] if config.account_type == "instant" else [
+    account_type = getattr(config, "account_type", "challenge")
+    stage_specs = [] if account_type == "instant" else [
         (f"Этап {index + 1}: {stage.name}", stage.profit_target, stage.max_loss)
         for index, stage in enumerate(config.stages)
     ]
     stage_specs.append(
         (
-            "Instant счет" if config.account_type == "instant" else "Funded до первой выплаты",
+            "Instant счет" if account_type == "instant" else "Funded до первой выплаты",
             config.funded.profit_target_for_first_payout,
             config.funded.max_loss,
         )
@@ -388,7 +389,7 @@ def _stage_plan_row_for_key(plan: StagePlan, stage_key: str) -> StagePlanRow:
 
 def _calculator_stage(stage_key: str, config: PropFirmConfig) -> tuple[str, float, float]:
     if stage_key == "funded":
-        stage_name = "Instant счет" if config.account_type == "instant" else "Funded до первой выплаты"
+        stage_name = "Instant счет" if getattr(config, "account_type", "challenge") == "instant" else "Funded до первой выплаты"
         return stage_name, config.funded.max_loss, config.funded.profit_target_for_first_payout
     stage_number = int(stage_key.replace("phase_", ""))
     stage = config.stages[stage_number - 1]
