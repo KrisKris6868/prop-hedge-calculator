@@ -24,9 +24,10 @@ class StateSnapshot:
 
     @classmethod
     def initial(cls, config: PropFirmConfig, initial_personal_balance: float) -> StateSnapshot:
+        is_instant = config.account_type == "instant"
         return cls(
             config=config,
-            prop_state=PropState.CHALLENGE_PHASE,
+            prop_state=PropState.FUNDED_PRE_PAYOUT if is_instant else PropState.CHALLENGE_PHASE,
             personal_state=PersonalState.PERSONAL_ACTIVE,
             cycle_state=CycleState.CYCLE_RUNNING,
             stage_index=0,
@@ -89,4 +90,3 @@ class StateSnapshot:
 
     def with_stage_pnl(self, stage_pnl: float) -> StateSnapshot:
         return replace(self, stage_pnl=stage_pnl)
-

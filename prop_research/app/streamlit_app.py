@@ -53,8 +53,8 @@ def main() -> None:
     ).minimum_personal_deposit
     with settings_summary:
         st.subheader("Риск и личный счет")
-        st.metric("Риск пропа по умолчанию", _money(_stage_max_risk(prop_firm, "phase_1")))
-        st.caption("Берется из max risk per trade первой стадии. В калькуляторе выбранная стадия берет свой max risk.")
+        st.metric("Риск пропа по умолчанию", _money(_default_prop_risk_amount(prop_firm)))
+        st.caption("Берется из max risk per trade выбранного типа счета.")
         st.metric("Рекомендуемый личный депозит", _money(recommended_balance))
         use_recommended_balance = st.checkbox("Использовать рекомендуемый депозит", value=True)
         if use_recommended_balance:
@@ -82,27 +82,15 @@ def main() -> None:
             if coverage_label == "Личный депозит растет на цену челленджа"
             else CoverageMode.BALANCE_COVERS_NEXT_CHALLENGE
         )
-        hedge_funded = not st.checkbox("Не хеджировать funded", value=False)
+        hedge_funded = not st.checkbox("Не хеджировать выплатной этап", value=False)
 
     with st.sidebar.expander("Новости", expanded=False):
         consider_news = st.checkbox("Учитывать новости", value=False)
         forced_close_r = st.number_input("Forced close result, R", value=0.0, step=0.1, disabled=not consider_news)
 
-    stage_options = {
-        **{f"phase_{index + 1}": f"Этап {index + 1}: {stage.name}" for index, stage in enumerate(prop_firm.stages)},
-        "funded": "Funded до первой выплаты",
-    }
+    stage_options = _stage_options(prop_firm)
 
-    calculator_tab, simulation_tab, research_tab, instant_tab, prop_vs_prop_tab, principles_tab = st.tabs(
-        [
-            "Калькулятор сделки",
-            "Симуляции / Monte Carlo",
-            "Исследования",
-            "Инстант счета",
-            "Prop vs Prop",
-            "Принципы выбора пропа",
-        ]
-    )
+    calculator_tab, simulation_tab, principles_tab = st.tabs(_enabled_tab_labels())
 
     with calculator_tab:
         _render_trade_calculator(
@@ -128,25 +116,6 @@ def main() -> None:
             prop_risk_percent=prop_risk_percent,
         )
 
-    with research_tab:
-        _render_research(
-            st=st,
-            pd=pd,
-            prop_firm=prop_firm,
-            stage_options=stage_options,
-            initial_personal_balance=initial_personal_balance,
-            prop_risk_percent=prop_risk_percent,
-            coverage_mode=coverage_mode,
-            hedge_funded=hedge_funded,
-            funded_target_enabled=funded_target_enabled,
-        )
-
-    with instant_tab:
-        _render_instant_accounts(st)
-
-    with prop_vs_prop_tab:
-        _render_prop_vs_prop(st, prop_firm)
-
     with principles_tab:
         _render_prop_selection_principles(st)
 
@@ -161,11 +130,114 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
         step=1_000.0,
     )
 
+    default_account_type_index = 2 if prop_firm.account_type == "instant" else 1 if len(prop_firm.stages) > 1 else 0
+    account_type_label = st.sidebar.selectbox(
+        "Тип счета",
+        ["1 фаза", "2 фазы", "Инстант"],
+        index=default_account_type_index,
+        key="account_type_label",
+    )
+    if account_type_label == "Инстант":
+        st.sidebar.subheader("Instant")
+        funded = prop_firm.funded
+        instant_max_loss_mode = st.sidebar.radio(
+            "Instant: max loss режим",
+            ["amount", "percent"],
+            index=0 if _field(funded, "max_loss_mode", "amount") == "amount" else 1,
+            horizontal=True,
+            key="instant_max_loss_mode",
+        )
+        instant_max_loss = st.sidebar.number_input(
+            "Instant: max loss",
+            value=_from_amount(funded.max_loss, instant_max_loss_mode, prop_firm.nominal_balance),
+            min_value=0.01,
+            step=500.0 if instant_max_loss_mode == "amount" else 0.1,
+            key="instant_max_loss",
+        )
+        instant_daily_loss_mode = st.sidebar.radio(
+            "Instant: daily loss режим",
+            ["amount", "percent"],
+            index=0 if _field(funded, "daily_loss_mode", "amount") == "amount" else 1,
+            horizontal=True,
+            key="instant_daily_loss_mode",
+        )
+        instant_daily_loss = st.sidebar.number_input(
+            "Instant: daily loss",
+            value=_from_amount(_field(funded, "daily_loss", None) or funded.max_loss / 2, instant_daily_loss_mode, prop_firm.nominal_balance),
+            min_value=0.01,
+            step=500.0 if instant_daily_loss_mode == "amount" else 0.1,
+            key="instant_daily_loss",
+        )
+        instant_max_risk = st.sidebar.number_input(
+            "Instant: max risk per trade, $",
+            value=float(_field(funded, "max_risk_per_trade", None) or prop_firm.prop_risk_per_trade),
+            min_value=1.0,
+            step=100.0,
+            key="instant_max_risk",
+        )
+        instant_drawdown_mode = st.sidebar.radio(
+            "Instant: drawdown",
+            ["static", "trailing"],
+            index=0 if _field(funded, "drawdown_mode", "static") == "static" else 1,
+            horizontal=True,
+            key="instant_drawdown",
+        )
+        consistency_enabled = st.sidebar.checkbox("Consistency rule", value=False, key="instant_consistency_enabled")
+        st.sidebar.number_input(
+            "Consistency rule, %",
+            value=30.0,
+            min_value=0.0,
+            max_value=100.0,
+            step=1.0,
+            disabled=not consistency_enabled,
+            key="instant_consistency",
+        )
+        instant_split_percent = st.sidebar.number_input(
+            "Profit split, %",
+            value=funded.trader_split * 100,
+            min_value=1.0,
+            max_value=100.0,
+            step=1.0,
+            key="instant_split",
+        )
+        instant_profit_target_enabled = st.sidebar.checkbox("Profit target", value=True, key="funded_profit_target_enabled")
+        instant_profit_target = st.sidebar.number_input(
+            "Profit target, $",
+            value=funded.profit_target_for_first_payout,
+            min_value=1.0,
+            step=500.0,
+            disabled=not instant_profit_target_enabled,
+            key="instant_profit_target",
+        )
+
+        return PropFirmConfig(
+            challenge_fee=float(challenge_fee),
+            nominal_balance=float(nominal_balance),
+            stages=[],
+            funded=_make_funded_config(
+                profit_target_for_first_payout=_funded_target_for_config(
+                    enabled=instant_profit_target_enabled,
+                    input_value=float(instant_profit_target),
+                    existing_value=funded.profit_target_for_first_payout,
+                    nominal_balance=float(nominal_balance),
+                ),
+                max_loss=_to_amount(float(instant_max_loss), instant_max_loss_mode, float(nominal_balance)),
+                trader_split=float(instant_split_percent) / 100,
+                max_loss_mode=instant_max_loss_mode,
+                daily_loss=_to_amount(float(instant_daily_loss), instant_daily_loss_mode, float(nominal_balance)),
+                daily_loss_mode=instant_daily_loss_mode,
+                max_risk_per_trade=float(instant_max_risk),
+                drawdown_mode=instant_drawdown_mode,
+            ),
+            prop_risk_per_trade=prop_firm.prop_risk_per_trade,
+            account_type="instant",
+        )
+
     st.sidebar.subheader("Challenge")
-    challenge_type = st.sidebar.radio("Тип челленджа", ["1 фазный", "2 фазный"], horizontal=True)
     stages: list[StageConfig] = []
-    source_stages = prop_firm.stages if len(prop_firm.stages) > 1 else [prop_firm.stages[0], prop_firm.stages[0]]
-    for index, default_stage in enumerate(source_stages[: 2 if challenge_type == "2 фазный" else 1], start=1):
+    default_stage_source = prop_firm.stages[0] if prop_firm.stages else StageConfig(name="phase_1", profit_target=6_000.0, max_loss=8_000.0)
+    source_stages = prop_firm.stages if len(prop_firm.stages) > 1 else [default_stage_source, default_stage_source]
+    for index, default_stage in enumerate(source_stages[: 2 if account_type_label == "2 фазы" else 1], start=1):
         with st.sidebar.expander(f"Этап {index}", expanded=index == 1):
             profit_target = st.number_input(
                 f"Этап {index}: profit target, $",
@@ -306,6 +378,7 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
             drawdown_mode=funded_drawdown_mode,
         ),
         prop_risk_per_trade=prop_firm.prop_risk_per_trade,
+        account_type="challenge",
     )
 
 
@@ -327,7 +400,7 @@ def _render_trade_calculator(
     top_1, top_2, top_3 = st.columns(3)
     top_1.metric("Начальный личный депозит", _money(initial_personal_balance))
     top_2.metric("Рекомендуемый личный депозит", _money(recommended_balance))
-    top_3.metric("Цена челленджа", _money(prop_firm.challenge_fee))
+    top_3.metric("Цена счета" if prop_firm.account_type == "instant" else "Цена челленджа", _money(prop_firm.challenge_fee))
 
     input_1, input_2, input_3 = st.columns(3)
     stage_key = input_1.selectbox("Текущая стадия", list(stage_options.keys()), format_func=stage_options.get)
@@ -456,12 +529,13 @@ def _render_trade_calculator(
             hedge_funded=hedge_funded,
         )
         payout_1, payout_2, payout_3 = st.columns(3)
-        payout_1.metric("Профит на funded", _money(payout["Профит на funded, $"]))
+        payout_profit_label = "Профит на instant" if prop_firm.account_type == "instant" else "Профит на funded"
+        payout_1.metric(payout_profit_label, _money(payout["Профит на funded, $"]))
         payout_2.metric("К выплате после сплита", _money(payout["К выплате после сплита, $"]))
         payout_3.metric("Чистыми", _money(payout["Чистыми после личных затрат, $"]))
 
         if not hedge_funded:
-            st.caption("Funded не хеджируется: личный счет фиксируется, а чистыми считается payout минус затраты на challenge и fee.")
+            st.caption("Выплатной этап не хеджируется: личный счет фиксируется, а чистыми считается payout минус затраты на счет.")
 
     with st.expander("План по стадиям", expanded=False):
         plan_df = pd.DataFrame(
@@ -705,6 +779,12 @@ def _stage_max_risk(config: PropFirmConfig, stage_key: str) -> float:
     return float(_field(stage, "max_risk_per_trade", None) or config.prop_risk_per_trade)
 
 
+def _default_prop_risk_amount(config: PropFirmConfig) -> float:
+    if config.account_type == "instant":
+        return _stage_max_risk(config, "funded")
+    return _stage_max_risk(config, "phase_1")
+
+
 def _stage_risk_percent(config: PropFirmConfig, stage_key: str) -> float:
     return _risk_percent_from_amount(_stage_max_risk(config, stage_key), config.nominal_balance)
 
@@ -727,7 +807,26 @@ def _hedge_summary_display(multiplier: float, personal_percent: float) -> str:
 
 
 def _default_prop_risk_percent(config: PropFirmConfig) -> float:
+    if config.account_type == "instant":
+        return _stage_risk_percent(config, "funded")
     return _stage_risk_percent(config, "phase_1")
+
+
+def _stage_options(config: PropFirmConfig) -> dict[str, str]:
+    if config.account_type == "instant":
+        return {"funded": "Instant счет"}
+    return {
+        **{f"phase_{index + 1}": f"Этап {index + 1}: {stage.name}" for index, stage in enumerate(config.stages)},
+        "funded": "Funded до первой выплаты",
+    }
+
+
+def _enabled_tab_labels() -> list[str]:
+    return [
+        "Калькулятор сделки",
+        "Симуляции / Monte Carlo",
+        "Принципы выбора пропа",
+    ]
 
 
 def _stage_daily_loss(config: PropFirmConfig, stage_key: str) -> float | None:

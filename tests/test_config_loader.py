@@ -76,3 +76,30 @@ def test_load_optional_risk_limits_from_json(tmp_path) -> None:
     assert config.funded.max_loss_mode == "percent"
     assert config.funded.max_risk_per_trade == 1000
     assert config.funded.drawdown_mode == "trailing"
+
+
+def test_load_instant_account_without_challenge_stages(tmp_path) -> None:
+    config_path = tmp_path / "instant.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "account_type": "instant",
+                "challenge_fee": 300,
+                "nominal_balance": 100000,
+                "prop_risk_per_trade": 1000,
+                "stages": [],
+                "funded": {
+                    "profit_target_for_first_payout": 2000,
+                    "max_loss": 3000,
+                    "trader_split": 0.8,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_prop_firm_config(config_path)
+
+    assert config.account_type == "instant"
+    assert config.stages == []
+    assert config.funded.profit_target_for_first_payout == 2000

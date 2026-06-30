@@ -1,8 +1,10 @@
 from prop_research.app.streamlit_app import (
     _default_prop_risk_percent,
+    _enabled_tab_labels,
     _funded_target_for_config,
     _hedge_summary_display,
     _personal_spent,
+    _stage_options,
     _risk_percent_from_amount,
     _stage_risk_percent,
     _target_distance_display,
@@ -62,3 +64,24 @@ def test_personal_spent_shows_only_used_personal_funds() -> None:
 def test_hedge_summary_display_is_compact() -> None:
     assert _hedge_summary_display(multiplier=40.0, personal_percent=2.5) == "2.50% от пропа · 40x меньше"
     assert _hedge_summary_display(multiplier=0.0, personal_percent=0.0) == "нет хеджа"
+
+
+def test_stage_options_for_instant_account_only_show_instant() -> None:
+    config = PropFirmConfig(
+        challenge_fee=300.0,
+        nominal_balance=100_000.0,
+        stages=[],
+        funded=FundedConfig(profit_target_for_first_payout=2_000.0, max_loss=3_000.0, trader_split=0.8),
+        prop_risk_per_trade=1_000.0,
+        account_type="instant",
+    )
+
+    assert _stage_options(config) == {"funded": "Instant счет"}
+
+
+def test_removed_tabs_are_not_rendered() -> None:
+    assert _enabled_tab_labels() == [
+        "Калькулятор сделки",
+        "Симуляции / Monte Carlo",
+        "Принципы выбора пропа",
+    ]

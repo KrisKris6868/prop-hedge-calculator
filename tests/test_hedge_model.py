@@ -298,6 +298,27 @@ def test_trade_calculator_explicit_trade_risk_overrides_stage_default() -> None:
     assert result["effective_prop_risk_amount"] == 3_000.0
 
 
+def test_instant_account_stage_plan_has_no_challenge_phases() -> None:
+    config = PropFirmConfig(
+        challenge_fee=300.0,
+        nominal_balance=100_000.0,
+        stages=[],
+        funded=FundedConfig(profit_target_for_first_payout=2_000.0, max_loss=3_000.0, trader_split=0.8),
+        prop_risk_per_trade=1_000.0,
+        account_type="instant",
+    )
+
+    plan = build_stage_plan(
+        config=config,
+        initial_personal_balance=300.0,
+        prop_risk_percent=1.0,
+        mode=CoverageMode.GROW_DEPOSIT_BY_FEE,
+    )
+
+    assert [row.stage_name for row in plan.rows] == ["Instant счет"]
+    assert plan.rows[0].profit_target == 2_000.0
+
+
 def test_funded_payout_preview_can_exclude_funded_hedge_costs() -> None:
     preview = calculate_funded_payout_preview(
         config=make_config(),

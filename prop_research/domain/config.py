@@ -68,13 +68,16 @@ class PropFirmConfig:
     stages: list[StageConfig]
     funded: FundedConfig
     prop_risk_per_trade: float
+    account_type: str = "challenge"
 
     def __post_init__(self) -> None:
         if self.challenge_fee <= 0:
             raise ValueError("challenge_fee must be positive")
         if self.nominal_balance <= 0:
             raise ValueError("nominal_balance must be positive")
-        if not self.stages:
+        if self.account_type not in {"challenge", "instant"}:
+            raise ValueError("account_type must be challenge or instant")
+        if self.account_type == "challenge" and not self.stages:
             raise ValueError("at least one challenge stage is required")
         if self.prop_risk_per_trade <= 0:
             raise ValueError("prop_risk_per_trade must be positive")

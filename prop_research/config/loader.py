@@ -39,4 +39,5 @@ def load_prop_firm_config(path: str | Path) -> PropFirmConfig:
             else None,
             drawdown_mode=str(raw["funded"].get("drawdown_mode", "static")),
         ),
+        account_type=str(raw.get("account_type", "challenge")),
     )

@@ -130,13 +130,13 @@ def build_stage_plan(
     personal_balance = initial_personal_balance
     rows: list[StagePlanRow] = []
 
-    stage_specs = [
+    stage_specs = [] if config.account_type == "instant" else [
         (f"Этап {index + 1}: {stage.name}", stage.profit_target, stage.max_loss)
         for index, stage in enumerate(config.stages)
     ]
     stage_specs.append(
         (
-            "Funded до первой выплаты",
+            "Instant счет" if config.account_type == "instant" else "Funded до первой выплаты",
             config.funded.profit_target_for_first_payout,
             config.funded.max_loss,
         )
@@ -203,7 +203,7 @@ def build_dealing_instruction(
     for row in plan.rows:
         cumulative_personal_cost += row.personal_loss_if_stage_passed
         payout_columns: dict[str, float] = {}
-        if row.stage_name == "Funded до первой выплаты":
+        if row.stage_name in {"Funded до первой выплаты", "Instant счет"}:
             gross_profit = config.funded.profit_target_for_first_payout
             payout_after_split = gross_profit * config.funded.trader_split
             payout_columns = {
@@ -388,7 +388,8 @@ def _stage_plan_row_for_key(plan: StagePlan, stage_key: str) -> StagePlanRow:
 
 def _calculator_stage(stage_key: str, config: PropFirmConfig) -> tuple[str, float, float]:
     if stage_key == "funded":
-        return "Funded до первой выплаты", config.funded.max_loss, config.funded.profit_target_for_first_payout
+        stage_name = "Instant счет" if config.account_type == "instant" else "Funded до первой выплаты"
+        return stage_name, config.funded.max_loss, config.funded.profit_target_for_first_payout
     stage_number = int(stage_key.replace("phase_", ""))
     stage = config.stages[stage_number - 1]
     return f"Этап {stage_number}: {stage.name}", stage.max_loss, stage.profit_target

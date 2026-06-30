@@ -98,3 +98,23 @@ def test_failure_before_payout_is_unrecoverable_when_personal_does_not_cover_fee
         machine.apply_trade(prop_win=False)
 
     assert machine.snapshot.cycle_state == CycleState.CYCLE_UNRECOVERABLE_FAILURE
+
+
+def test_instant_account_starts_directly_before_first_payout() -> None:
+    config = PropFirmConfig(
+        challenge_fee=300.0,
+        nominal_balance=100_000.0,
+        stages=[],
+        funded=FundedConfig(profit_target_for_first_payout=2_000.0, max_loss=3_000.0, trader_split=0.8),
+        prop_risk_per_trade=1_000.0,
+        account_type="instant",
+    )
+
+    machine = PropStateMachine.start(
+        config=config,
+        initial_personal_balance=300.0,
+        strategy=FixedPersonalRiskStrategy(risk_amount=0.0),
+    )
+
+    assert machine.snapshot.prop_state == PropState.FUNDED_PRE_PAYOUT
+    assert machine.snapshot.stage_index == 0
