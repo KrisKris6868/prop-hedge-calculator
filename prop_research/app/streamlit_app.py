@@ -938,9 +938,41 @@ def _make_prop_firm_config(**kwargs) -> PropFirmConfig:
     try:
         return PropFirmConfig(**kwargs)
     except TypeError:
-        legacy_kwargs = dict(kwargs)
-        legacy_kwargs.pop("account_type", None)
-        return PropFirmConfig(**legacy_kwargs)
+        account_type = str(kwargs.get("account_type", "challenge"))
+        legacy_kwargs = _legacy_prop_firm_kwargs(kwargs)
+        return _attach_account_type(PropFirmConfig(**legacy_kwargs), account_type)
+
+
+def _legacy_prop_firm_kwargs(kwargs: dict) -> dict:
+    legacy_kwargs = dict(kwargs)
+    account_type = str(legacy_kwargs.pop("account_type", "challenge"))
+    if account_type == "instant" and not legacy_kwargs.get("stages"):
+        funded = legacy_kwargs["funded"]
+        max_risk_per_trade = _field(funded, "max_risk_per_trade", None) or legacy_kwargs.get("prop_risk_per_trade", 0.0)
+        legacy_kwargs["stages"] = [
+            _make_stage_config(
+                name="instant",
+                profit_target=_positive_amount(float(_field(funded, "profit_target_for_first_payout", 0.0)), 1.0),
+                max_loss=_positive_amount(float(_field(funded, "max_loss", 0.0)), 1.0),
+                max_loss_mode=str(_field(funded, "max_loss_mode", "amount")),
+                daily_loss=_field(funded, "daily_loss", None),
+                daily_loss_mode=str(_field(funded, "daily_loss_mode", "amount")),
+                max_risk_per_trade=_positive_amount(float(max_risk_per_trade), 1.0),
+                drawdown_mode=str(_field(funded, "drawdown_mode", "static")),
+            )
+        ]
+    return legacy_kwargs
+
+
+def _attach_account_type(config, account_type: str):
+    try:
+        object.__setattr__(config, "account_type", account_type)
+    except Exception:
+        try:
+            setattr(config, "account_type", account_type)
+        except Exception:
+            pass
+    return config
 
 
 def _money(value: float) -> str:

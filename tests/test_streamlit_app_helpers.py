@@ -127,7 +127,46 @@ def test_make_prop_firm_config_is_backward_compatible_without_account_type(monke
     )
 
     assert isinstance(config, LegacyPropFirmConfig)
-    assert not hasattr(config, "account_type")
+    assert config.account_type == "challenge"
+
+
+def test_make_prop_firm_config_keeps_instant_usable_with_legacy_config(monkeypatch) -> None:
+    class LegacyPropFirmConfig:
+        def __init__(self, challenge_fee, nominal_balance, stages, funded, prop_risk_per_trade):
+            if not stages:
+                raise ValueError("stages must not be empty")
+            self.challenge_fee = challenge_fee
+            self.nominal_balance = nominal_balance
+            self.stages = stages
+            self.funded = funded
+            self.prop_risk_per_trade = prop_risk_per_trade
+
+    import prop_research.app.streamlit_app as streamlit_app
+
+    monkeypatch.setattr(streamlit_app, "PropFirmConfig", LegacyPropFirmConfig)
+
+    config = _make_prop_firm_config(
+        challenge_fee=300.0,
+        nominal_balance=100_000.0,
+        stages=[],
+        funded=FundedConfig(
+            profit_target_for_first_payout=2_000.0,
+            max_loss=5_000.0,
+            trader_split=0.8,
+            daily_loss=4_000.0,
+            max_risk_per_trade=1_000.0,
+            drawdown_mode="static",
+        ),
+        prop_risk_per_trade=1_000.0,
+        account_type="instant",
+    )
+
+    assert isinstance(config, LegacyPropFirmConfig)
+    assert config.account_type == "instant"
+    assert len(config.stages) == 1
+    assert config.stages[0].name == "instant"
+    assert config.stages[0].profit_target == 2_000.0
+    assert config.stages[0].max_loss == 5_000.0
 
 
 def test_make_funded_config_recovers_from_zero_max_loss(monkeypatch) -> None:
