@@ -130,6 +130,33 @@ def test_make_prop_firm_config_is_backward_compatible_without_account_type(monke
     assert not hasattr(config, "account_type")
 
 
+def test_make_funded_config_recovers_from_zero_max_loss(monkeypatch) -> None:
+    import prop_research.app.streamlit_app as streamlit_app
+
+    original_funded_config = streamlit_app.FundedConfig
+    attempts = {"count": 0}
+
+    def flaky_funded_config(**kwargs):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise ValueError("max_loss must be positive")
+        return original_funded_config(**kwargs)
+
+    monkeypatch.setattr(streamlit_app, "FundedConfig", flaky_funded_config)
+
+    funded = streamlit_app._make_funded_config(
+        profit_target_for_first_payout=0.0,
+        max_loss=0.0,
+        trader_split=0.0,
+        daily_loss=0.0,
+        max_risk_per_trade=0.0,
+    )
+
+    assert funded.max_loss > 0
+    assert funded.profit_target_for_first_payout > 0
+    assert funded.trader_split > 0
+
+
 def test_positive_amount_falls_back_from_stale_zero_widget_state() -> None:
     assert _positive_amount(0.0, fallback=8_000.0) == 8_000.0
     assert _positive_amount(-1.0, fallback=8_000.0) == 8_000.0

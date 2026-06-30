@@ -912,6 +912,20 @@ def _make_funded_config(**kwargs) -> FundedConfig:
         kwargs["max_risk_per_trade"] = _positive_amount(float(kwargs["max_risk_per_trade"]), 1.0)
     try:
         return FundedConfig(**kwargs)
+    except ValueError:
+        kwargs["profit_target_for_first_payout"] = _positive_amount(float(kwargs.get("profit_target_for_first_payout", 0.0)), 1.0)
+        kwargs["max_loss"] = _positive_amount(float(kwargs.get("max_loss", 0.0)), 1.0)
+        kwargs["trader_split"] = min(1.0, max(0.01, float(kwargs.get("trader_split", 0.01))))
+        kwargs["daily_loss"] = _positive_amount(float(kwargs.get("daily_loss") or 0.0), kwargs["max_loss"] / 2)
+        kwargs["max_risk_per_trade"] = _positive_amount(float(kwargs.get("max_risk_per_trade") or 0.0), 1.0)
+        try:
+            return FundedConfig(**kwargs)
+        except TypeError:
+            return FundedConfig(
+                profit_target_for_first_payout=kwargs["profit_target_for_first_payout"],
+                max_loss=kwargs["max_loss"],
+                trader_split=kwargs["trader_split"],
+            )
     except TypeError:
         return FundedConfig(
             profit_target_for_first_payout=kwargs["profit_target_for_first_payout"],
