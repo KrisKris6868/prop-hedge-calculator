@@ -1,4 +1,13 @@
-from prop_research.app.trading_cockpit import build_account_summary, preview_account_state, reset_account_runtime
+from prop_research.app.trading_cockpit import (
+    _consistency_text,
+    _funded_payout_values,
+    _minimum_days_state,
+    _minimum_days_text,
+    _pnl_step_for_stage,
+    build_account_summary,
+    preview_account_state,
+    reset_account_runtime,
+)
 from prop_research.config.account_states import AccountState
 from prop_research.config.templates import prop_firm_to_template_config
 from prop_research.domain.config import FundedConfig, PropFirmConfig, StageConfig
@@ -148,3 +157,74 @@ def test_preview_caps_pnl_to_stage_target() -> None:
     assert preview.runtime_state["calculator_current_prop_pnl"] == 6_000.0
     assert summary.current_pnl == 6_000.0
     assert summary.status == "2-я фаза"
+
+
+def test_pnl_step_uses_prop_risk_until_target_remainder() -> None:
+    config = make_config()
+
+    assert _pnl_step_for_stage(config, "phase_1", current_pnl=1_000.0, risk=1_900.0) == 1_900.0
+    assert _pnl_step_for_stage(config, "phase_1", current_pnl=5_500.0, risk=1_900.0) == 500.0
+
+
+def test_consistency_text_is_dash_when_disabled_and_plain_when_no_trades() -> None:
+    config = make_config()
+    base = AccountState(
+        name="PipFarm 100k",
+        config=prop_firm_to_template_config(config),
+        ui_state={},
+        runtime_state={"calculator_stage_key": "phase_1"},
+    )
+
+    assert _consistency_text(base, "phase_1", 0.0) == "—"
+
+    enabled = AccountState(
+        name=base.name,
+        config=base.config,
+        ui_state={"phase_1_consistency_enabled": True, "phase_1_consistency": 35.0},
+        runtime_state={"calculator_stage_key": "phase_1", "calculator_largest_winning_trade_phase_1": 0.0},
+    )
+
+    assert _consistency_text(enabled, "phase_1", 0.0) == "Сделок не было"
+
+
+def test_minimum_days_text_is_compact_fraction_or_dash() -> None:
+    config = make_config()
+    base = AccountState(
+        name="PipFarm 100k",
+        config=prop_firm_to_template_config(config),
+        ui_state={},
+        runtime_state={"calculator_stage_key": "funded"},
+    )
+
+    assert _minimum_days_text(base, config, "funded", 0.0) == "—"
+
+    enabled = AccountState(
+        name=base.name,
+        config=base.config,
+        ui_state={
+            "minimum_profitable_days_enabled": True,
+            "minimum_profitable_days_required": 5,
+            "minimum_profitable_day_percent": 0.5,
+        },
+        runtime_state={"calculator_stage_key": "funded"},
+    )
+
+    assert _minimum_days_text(enabled, config, "funded", 0.0) == "0/5"
+    assert _minimum_days_text(enabled, config, "funded", 2_500.0) == "5/5"
+    assert _minimum_days_state("5/5") == "ok"
+
+
+def test_funded_payout_values_show_split_net_and_cleanest() -> None:
+    config = make_config()
+
+    profit, split, net, cleanest = _funded_payout_values(
+        config=config,
+        stage_key="funded",
+        current_pnl=5_000.0,
+        personal_spent=500.0,
+    )
+
+    assert profit == 5_000.0
+    assert split == 4_000.0
+    assert net == 3_500.0
+    assert cleanest == 3_300.0

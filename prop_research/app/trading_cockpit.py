@@ -23,7 +23,6 @@ from prop_research.app.streamlit_app import (
     _default_prop_risk_percent,
     _hedge_margin_liquidity,
     _lot_from_risk_and_stop_points,
-    _minimum_profitable_days_status_display,
     _next_stage_key,
     _next_stage_label,
     _profitable_days_from_pnl,
@@ -57,6 +56,11 @@ class CockpitSummary:
     status: str
     consistency_text: str
     minimum_days_text: str
+    personal_spent: float
+    funded_profit: float
+    funded_split_payout: float
+    funded_net: float
+    funded_cleanest: float
 
 
 def main() -> None:
@@ -112,6 +116,9 @@ def build_account_summary(account: AccountState) -> CockpitSummary:
         trailing_high_watermark=_float_state(runtime, f"calculator_trailing_high_watermark_{stage_key}", max(0.0, current_pnl)),
     )
     personal_balance = float(personal_balance_state["Текущий баланс личного счета, $"])
+    current_stage_spent = max(0.0, initial_personal_balance - personal_balance)
+    completed_spent = _float_state(runtime, "calculator_completed_personal_spent", 0.0) if _account_type(config) == "challenge" else 0.0
+    personal_spent = round(completed_spent + current_stage_spent, 2)
     trade = calculate_personal_risk_for_trade(
         config=config,
         stage_key=stage_key,
@@ -134,6 +141,12 @@ def build_account_summary(account: AccountState) -> CockpitSummary:
     margin_topup = _margin_topup_for_runtime(runtime, stage_key, personal_balance, personal_risk, stop_points)
     distance_to_target = float(trade["distance_to_target"])
     distance_to_max_loss = float(trade["distance_to_max_loss"])
+    funded_profit, funded_split_payout, funded_net, funded_cleanest = _funded_payout_values(
+        config=config,
+        stage_key=stage_key,
+        current_pnl=current_pnl,
+        personal_spent=personal_spent,
+    )
     return CockpitSummary(
         name=account.name,
         account_type=_account_type(config),
@@ -151,6 +164,11 @@ def build_account_summary(account: AccountState) -> CockpitSummary:
         status=_decision_status(config, stage_key, distance_to_target, distance_to_max_loss, margin_topup),
         consistency_text=_consistency_text(account, stage_key, current_pnl),
         minimum_days_text=_minimum_days_text(account, config, stage_key, current_pnl),
+        personal_spent=personal_spent,
+        funded_profit=funded_profit,
+        funded_split_payout=funded_split_payout,
+        funded_net=funded_net,
+        funded_cleanest=funded_cleanest,
     )
 
 
@@ -214,7 +232,6 @@ def _render_accounts_dashboard(st, pd, summaries: list[CockpitSummary]) -> None:
                 "Риск личного": _money(item.personal_risk),
                 "Лоты": f"{item.prop_lot:.2f} / {item.hedge_lot:.2f}",
                 "Маржа": "OK" if item.margin_topup <= 0 else f"+{_money(item.margin_topup)}",
-                "Статус": item.status,
             }
             for item in summaries
         ]
@@ -227,13 +244,15 @@ def _render_account_workbench(st, account: AccountState) -> AccountState:
     st.markdown(f'<div class="section-label">Счет: {saved_summary.name}</div>', unsafe_allow_html=True)
 
     stage_options = _stage_options(config)
+    widget_version = int(st.session_state.get(f"cockpit_reset_version_{account.name}", 0))
+    widget_prefix = f"cockpit_{account.name}_{widget_version}"
     control_1, control_2, control_3, control_4 = st.columns([1.2, 1, 1, 1])
     stage_key = control_1.selectbox(
         "Стадия",
         list(stage_options),
         index=list(stage_options).index(saved_summary.stage_key),
         format_func=stage_options.get,
-        key=f"cockpit_stage_{account.name}",
+        key=f"{widget_prefix}_stage",
     )
     risk_default = _float_state(account.runtime_state, f"calculator_trade_risk_applied_{stage_key}", _stage_max_risk(config, stage_key))
     risk = control_2.number_input(
@@ -241,13 +260,13 @@ def _render_account_workbench(st, account: AccountState) -> AccountState:
         value=risk_default,
         min_value=1.0,
         step=100.0,
-        key=f"cockpit_risk_{account.name}_{stage_key}",
+        key=f"{widget_prefix}_risk_{stage_key}",
     )
     pnl = control_3.number_input(
         "Текущий PnL",
         value=saved_summary.current_pnl,
         step=_pnl_step_for_stage(config, stage_key, saved_summary.current_pnl, risk),
-        key=f"cockpit_pnl_{account.name}",
+        key=f"{widget_prefix}_pnl",
     )
     stop_default = _stop_points(account.runtime_state, stage_key)
     stop_points = control_4.number_input(
@@ -255,7 +274,7 @@ def _render_account_workbench(st, account: AccountState) -> AccountState:
         value=stop_default,
         min_value=1.0,
         step=10.0,
-        key=f"cockpit_stop_{account.name}_{stage_key}",
+        key=f"{widget_prefix}_stop_{stage_key}",
     )
 
     preview = preview_account_state(account, stage_key=stage_key, pnl=pnl, stop_points=stop_points, risk=risk)
@@ -266,6 +285,7 @@ def _render_account_workbench(st, account: AccountState) -> AccountState:
     reset_col, spacer_col = st.columns([1, 3])
     if reset_col.button("Сбросить путь", use_container_width=True, key=f"cockpit_reset_{account.name}"):
         _save_reset_account(account)
+        st.session_state[f"cockpit_reset_version_{account.name}"] = widget_version + 1
         st.success("Путь сброшен.")
         st.rerun()
     spacer_col.caption("Риск пропа задает шаг PnL. Нажимай +/- у PnL, чтобы быстро прокручивать путь по счету.")
@@ -275,33 +295,22 @@ def _render_account_workbench(st, account: AccountState) -> AccountState:
     _risk_card(risk_2, "Риск личного hedge", _money(summary.personal_risk), f"{summary.hedge_lot:.2f} lot")
     _metric_card(risk_3, "Текущий PnL", _money(summary.current_pnl), f"До цели {_money(summary.distance_to_target)}")
 
-    signal_1, signal_2 = st.columns([1.15, 1.1])
-    signal_1.markdown(
-        f"""
-        <div class="decision-panel">
-          <div class="decision-label">Решение перед входом</div>
-          <div class="decision-line"><strong>{_money(summary.prop_risk)}</strong><span>{summary.prop_lot:.2f} lot ПРОП</span></div>
-          <div class="decision-line"><strong>{_money(summary.personal_risk)}</strong><span>{summary.hedge_lot:.2f} lot ЛИЧНЫЙ</span></div>
-          <div class="decision-note">Плюс/минус у PnL двигает счет на шаг риска пропа. Hedge пересчитывается в обратную сторону.</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
     margin_label = "Маржа ок" if summary.margin_topup <= 0 else f"Докинуть {_money(summary.margin_topup)}"
-    _status_panel(
-        signal_2,
-        [
-            ("Статус", summary.status),
-            ("Ликвидность", margin_label),
-            ("Consistency", summary.consistency_text),
-            ("Min days", summary.minimum_days_text),
-        ],
-    )
-
     details_1, details_2, details_3 = st.columns(3)
     _metric_card(details_1, "Баланс личного", _money(summary.personal_balance), "после текущего PnL")
     _metric_card(details_2, "Осталось до max loss", _money(summary.distance_to_max_loss), "")
-    _metric_card(details_3, "Стадия", summary.stage_label, "Instant" if summary.account_type == "instant" else "Challenge")
+    _signal_card(details_3, "Ликвидность", margin_label, "ok" if summary.margin_topup <= 0 else "danger")
+
+    signal_1, signal_2 = st.columns(2)
+    _signal_card(signal_1, "Consistency", summary.consistency_text, _consistency_state(summary.consistency_text))
+    _signal_card(signal_2, "Минимальные дни", summary.minimum_days_text, _minimum_days_state(summary.minimum_days_text))
+
+    if stage_key in {"funded", "funded_next"}:
+        payout_1, payout_2, payout_3, payout_4 = st.columns(4)
+        _metric_card(payout_1, "Профит", _money(summary.funded_profit), "funded")
+        _metric_card(payout_2, "Profit split", _money(summary.funded_split_payout), f"{config.funded.trader_split * 100:.0f}%")
+        _metric_card(payout_3, "Чистыми", _money(summary.funded_net), "минус личные затраты")
+        _metric_card(payout_4, "Чистейшие", _money(summary.funded_cleanest), "минус цена пропа")
     return preview
 
 
@@ -373,34 +382,76 @@ def _consistency_text(account: AccountState, stage_key: str, current_pnl: float)
     config = prop_firm_from_template_config(account.config)
     account_type = _account_type(config)
     enabled_key, percent_key = _consistency_state_keys(account_type, stage_key)
+    enabled = bool(account.ui_state.get(enabled_key, False))
+    rule_percent = _float_state(account.ui_state, percent_key, 0.0)
+    largest_profit = _float_state(account.runtime_state, f"calculator_largest_winning_trade_{stage_key}", 0.0)
+    if not enabled:
+        return "—"
+    if rule_percent <= 0 or largest_profit <= 0:
+        return "Сделок не было"
     status = _consistency_status_display(
-        enabled=bool(account.ui_state.get(enabled_key, False)),
-        rule_percent=_float_state(account.ui_state, percent_key, 0.0),
+        enabled=True,
+        rule_percent=rule_percent,
         current_prop_pnl=current_pnl,
-        largest_profit=_float_state(account.runtime_state, f"calculator_largest_winning_trade_{stage_key}", 0.0),
+        largest_profit=largest_profit,
     )
     if status is None:
-        return "Consistency: выключен"
-    return status[1]
+        return "—"
+    message = status[1]
+    return (
+        message.replace("Consistency выполнен: ", "")
+        .replace("Consistency еще не выполнен: ", "")
+        .replace("Consistency включен, но правило или прибыльная сделка пока не заданы.", "Сделок не было")
+    )
 
 
 def _minimum_days_text(account: AccountState, config: PropFirmConfig, stage_key: str, current_pnl: float) -> str:
     enabled = stage_key == "funded" and bool(account.ui_state.get("minimum_profitable_days_enabled", False))
     required_days = int(_float_state(account.ui_state, "minimum_profitable_days_required", 0.0))
     minimum_day_profit = config.nominal_balance * _float_state(account.ui_state, "minimum_profitable_day_percent", 0.0) / 100
-    status = _minimum_profitable_days_status_display(
-        enabled=enabled,
-        required_days=required_days,
-        completed_days=_profitable_days_from_pnl(
-            current_prop_pnl=current_pnl,
-            minimum_day_profit=minimum_day_profit,
-            required_days=required_days,
-        ),
+    if not enabled or required_days <= 0 or minimum_day_profit <= 0:
+        return "—"
+    completed_days = _profitable_days_from_pnl(
+        current_prop_pnl=current_pnl,
         minimum_day_profit=minimum_day_profit,
+        required_days=required_days,
     )
-    if status is None:
-        return "Min days: не активны"
-    return status[1]
+    return f"{completed_days}/{required_days}"
+
+
+def _funded_payout_values(
+    *,
+    config: PropFirmConfig,
+    stage_key: str,
+    current_pnl: float,
+    personal_spent: float,
+) -> tuple[float, float, float, float]:
+    if stage_key not in {"funded", "funded_next"}:
+        return (0.0, 0.0, 0.0, 0.0)
+    profit = round(max(0.0, float(current_pnl)), 2)
+    split_payout = round(profit * config.funded.trader_split, 2)
+    net = round(split_payout - max(0.0, float(personal_spent)), 2)
+    fee_to_subtract = 0.0 if stage_key == "funded_next" else float(config.challenge_fee)
+    cleanest = round(net - fee_to_subtract, 2)
+    return (profit, split_payout, net, cleanest)
+
+
+def _consistency_state(value: str) -> str:
+    if value == "—":
+        return "neutral"
+    if value.startswith("крупнейшая сделка") or value.startswith("Выполн"):
+        return "ok"
+    return "warn"
+
+
+def _minimum_days_state(value: str) -> str:
+    if value == "—":
+        return "neutral"
+    try:
+        completed, required = [int(part) for part in value.split("/", 1)]
+    except (ValueError, TypeError):
+        return "warn"
+    return "ok" if required > 0 and completed >= required else "warn"
 
 
 def _cap_pnl_to_stage_target(config: PropFirmConfig, stage_key: str, pnl: float) -> float:
@@ -477,12 +528,17 @@ def _risk_card(container, label: str, value: str, note: str) -> None:
     )
 
 
-def _status_panel(container, rows: list[tuple[str, str]]) -> None:
-    row_html = "".join(
-        f'<div class="status-tile"><span>{label}</span><strong>{value}</strong></div>'
-        for label, value in rows
+def _signal_card(container, label: str, value: str, state: str = "neutral") -> None:
+    safe_state = state if state in {"ok", "danger", "warn", "neutral"} else "neutral"
+    container.markdown(
+        f"""
+        <div class="signal-card signal-{safe_state}">
+          <div class="signal-label">{label}</div>
+          <div class="signal-value">{value}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
-    container.markdown(f'<div class="status-panel">{row_html}</div>', unsafe_allow_html=True)
 
 
 def _inject_cockpit_css(st) -> None:
@@ -505,27 +561,18 @@ def _inject_cockpit_css(st) -> None:
         .metric-value { color: #252a36; font-size: 29px; line-height: 1.08; font-weight: 650; overflow-wrap: anywhere; }
         .risk-value { color: #172033; font-size: 40px; line-height: 1; font-weight: 780; overflow-wrap: anywhere; }
         .metric-note { color: #8a91a0; font-size: 13px; margin-top: 9px; min-height: 16px; }
-        .decision-panel {
-            min-height: 166px; border-radius: 8px; padding: 18px 20px; background: #eaf3ff;
-            border: 1px solid #cfe3ff; color: #0f4f9c;
+        .signal-card {
+            min-height: 100px; border-radius: 8px; padding: 15px 17px;
+            border: 1px solid #e0e7f1; background: #ffffff; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
         }
-        .decision-label { font-size: 14px; color: #3571b8; margin-bottom: 12px; }
-        .decision-line {
-            display: grid; grid-template-columns: minmax(150px, 0.8fr) minmax(160px, 1fr); align-items: baseline;
-            gap: 14px; padding: 5px 0;
-        }
-        .decision-line strong { color: #06498d; font-size: 32px; line-height: 1; font-weight: 800; overflow-wrap: anywhere; }
-        .decision-line span { color: #172033; font-size: 20px; line-height: 1.1; font-weight: 760; }
-        .decision-note { font-size: 13px; margin-top: 12px; color: #3d73a9; line-height: 1.35; }
-        .status-panel {
-            min-height: 166px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px;
-        }
-        .status-tile {
-            border: 1px solid #e0e7f1; border-radius: 8px; padding: 12px 14px; background: #ffffff;
-            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04); min-height: 78px;
-        }
-        .status-tile span { display: block; color: #7b8290; font-size: 13px; margin-bottom: 7px; }
-        .status-tile strong { display: block; color: #252a36; font-size: 16px; font-weight: 760; line-height: 1.25; overflow-wrap: anywhere; }
+        .signal-label { color: #69707f; font-size: 13px; margin-bottom: 9px; }
+        .signal-value { color: #252a36; font-size: 24px; line-height: 1.15; font-weight: 780; overflow-wrap: anywhere; }
+        .signal-ok { background: #eaf8ef; border-color: #bee8cc; }
+        .signal-ok .signal-value { color: #087a34; }
+        .signal-danger { background: #ffecec; border-color: #ffc8c8; }
+        .signal-danger .signal-value { color: #b42318; }
+        .signal-warn { background: #fff7df; border-color: #f5df9f; }
+        .signal-warn .signal-value { color: #936400; }
         .empty-panel {
             border: 1px solid #e6e8ee; border-radius: 8px; padding: 24px; color: #69707f; background: #fff;
         }
