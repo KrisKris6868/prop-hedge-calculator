@@ -38,6 +38,12 @@ from prop_research.app.hedge_model import (
     minimum_personal_deposit_for_strict_free_prop,
 )
 from prop_research.app.risk_curve import build_risk_curve
+from prop_research.config.account_states import (
+    AccountState,
+    delete_account_state,
+    load_account_states,
+    save_account_state,
+)
 from prop_research.config.loader import load_prop_firm_config
 from prop_research.config.templates import (
     PropTemplate,
@@ -55,9 +61,14 @@ from prop_research.strategies.fixed import FixedPersonalRiskStrategy
 from prop_research.strategies.zoned import ZonedPersonalRiskStrategy
 
 USER_TEMPLATE_PATH = PROJECT_ROOT / ".streamlit" / "prop_templates.json"
+USER_ACCOUNT_STATE_PATH = PROJECT_ROOT / ".streamlit" / "account_states.json"
 ACTIVE_TEMPLATE_CONFIG_KEY = "prop_template_active_config"
 ACTIVE_TEMPLATE_NAME_KEY = "prop_template_active_name"
+ACTIVE_ACCOUNT_CONFIG_KEY = "account_state_active_config"
+ACTIVE_ACCOUNT_NAME_KEY = "account_state_active_name"
+PENDING_ACCOUNT_OPEN_KEY = "account_state_pending_open"
 NO_TEMPLATE_LABEL = "Без шаблона"
+NO_ACCOUNT_LABEL = "Без счета"
 TEMPLATE_UI_STATE_KEYS = (
     "account_type_label",
     "account_nominal_balance_preset",
@@ -120,6 +131,8 @@ def main() -> None:
         st.session_state.clear()
         st.rerun()
     st.sidebar.caption(f"Версия: {_app_version()}")
+    _apply_pending_account_open(st)
+    account_slot = st.sidebar.container()
     template_slot = st.sidebar.container()
 
     with st.sidebar.expander("Расширенные настройки", expanded=False):
@@ -127,8 +140,10 @@ def main() -> None:
 
     settings_summary = st.sidebar.container()
     prop_firm = load_prop_firm_config(Path(config_path))
+    prop_firm = _account_applied_config(st, prop_firm)
     prop_firm = _template_applied_config(st, prop_firm)
     prop_firm = _sidebar_rules(st, prop_firm)
+    _render_account_sidebar(st, account_slot, prop_firm)
     _render_template_sidebar(st, template_slot, prop_firm)
     funded_target_enabled = bool(st.session_state.get("funded_profit_target_enabled", True))
     hedge_funded = not bool(st.session_state.get("skip_funded_hedge", False))
@@ -210,6 +225,154 @@ def main() -> None:
 
     with principles_tab:
         _render_prop_selection_principles(st)
+    _autosave_active_account(st, prop_firm)
+
+
+def _apply_pending_account_open(st) -> None:
+    pending_name = st.session_state.pop(PENDING_ACCOUNT_OPEN_KEY, None)
+    if not pending_name:
+        return
+    if pending_name == NO_ACCOUNT_LABEL:
+        st.session_state.pop(ACTIVE_ACCOUNT_CONFIG_KEY, None)
+        st.session_state.pop(ACTIVE_ACCOUNT_NAME_KEY, None)
+        return
+    accounts = {account.name: account for account in load_account_states(USER_ACCOUNT_STATE_PATH)}
+    account = accounts.get(str(pending_name))
+    if account is None:
+        st.sidebar.warning("Рабочий счет не найден.")
+        return
+    _load_account_state_into_session(st.session_state, account)
+
+
+def _account_applied_config(st, fallback: PropFirmConfig) -> PropFirmConfig:
+    raw_config = st.session_state.get(ACTIVE_ACCOUNT_CONFIG_KEY)
+    if not raw_config:
+        return fallback
+    try:
+        return prop_firm_from_template_config(dict(raw_config))
+    except Exception:
+        st.session_state.pop(ACTIVE_ACCOUNT_CONFIG_KEY, None)
+        st.session_state.pop(ACTIVE_ACCOUNT_NAME_KEY, None)
+        st.sidebar.warning("Рабочий счет не прочитался, взяла настройки из файла правил.")
+        return fallback
+
+
+def _render_account_sidebar(st, container, prop_firm: PropFirmConfig) -> None:
+    accounts = load_account_states(USER_ACCOUNT_STATE_PATH)
+    accounts_by_name = {account.name: account for account in accounts}
+    options = [NO_ACCOUNT_LABEL, *accounts_by_name]
+    active_name = str(st.session_state.get(ACTIVE_ACCOUNT_NAME_KEY, NO_ACCOUNT_LABEL))
+    selected_index = options.index(active_name) if active_name in options else 0
+
+    with container.expander("Рабочие счета", expanded=True):
+        selected_name = st.selectbox(
+            "Выбрать счет",
+            options,
+            index=selected_index,
+            key="account_state_selected",
+        )
+        action_1, action_2 = st.columns(2)
+        if action_1.button("Открыть", use_container_width=True, key="account_state_open"):
+            st.session_state[PENDING_ACCOUNT_OPEN_KEY] = selected_name
+            st.rerun()
+        if selected_name != NO_ACCOUNT_LABEL and action_2.button("Удалить", use_container_width=True, key="account_state_delete"):
+            delete_account_state(USER_ACCOUNT_STATE_PATH, selected_name)
+            if st.session_state.get(ACTIVE_ACCOUNT_NAME_KEY) == selected_name:
+                st.session_state.pop(ACTIVE_ACCOUNT_CONFIG_KEY, None)
+                st.session_state.pop(ACTIVE_ACCOUNT_NAME_KEY, None)
+            st.rerun()
+
+        account_name = st.text_input(
+            "Имя счета",
+            value=str(st.session_state.get("account_state_save_name", active_name if active_name != NO_ACCOUNT_LABEL else "")),
+            placeholder="Например: PipFarm 100k июль",
+            key="account_state_save_name",
+        )
+        if st.button("Сохранить текущий путь", use_container_width=True, key="account_state_save"):
+            clean_name = account_name.strip()
+            if not clean_name:
+                st.warning("Напиши имя счета.")
+            else:
+                _save_current_account_state(st, clean_name, prop_firm)
+                st.rerun()
+
+        if active_name != NO_ACCOUNT_LABEL:
+            st.caption(f"Активный счет: {active_name}. Прогресс автосохраняется.")
+
+
+def _save_current_account_state(st, name: str, prop_firm: PropFirmConfig) -> None:
+    account = AccountState(
+        name=name,
+        config=prop_firm_to_template_config(prop_firm),
+        ui_state=_account_ui_state_from_session(st.session_state),
+        runtime_state=_account_runtime_state_from_session(st.session_state),
+    )
+    save_account_state(USER_ACCOUNT_STATE_PATH, account)
+    st.session_state[ACTIVE_ACCOUNT_NAME_KEY] = name
+    st.session_state[ACTIVE_ACCOUNT_CONFIG_KEY] = prop_firm_to_template_config(prop_firm)
+
+
+def _autosave_active_account(st, prop_firm: PropFirmConfig) -> None:
+    active_name = st.session_state.get(ACTIVE_ACCOUNT_NAME_KEY)
+    if not active_name:
+        return
+    save_account_state(
+        USER_ACCOUNT_STATE_PATH,
+        AccountState(
+            name=str(active_name),
+            config=prop_firm_to_template_config(prop_firm),
+            ui_state=_account_ui_state_from_session(st.session_state),
+            runtime_state=_account_runtime_state_from_session(st.session_state),
+        ),
+    )
+
+
+def _load_account_state_into_session(session_state, account: AccountState) -> None:
+    _clear_template_setting_state(session_state)
+    _clear_account_progress_state(session_state)
+    session_state.pop(ACTIVE_TEMPLATE_CONFIG_KEY, None)
+    session_state.pop(ACTIVE_TEMPLATE_NAME_KEY, None)
+    session_state[ACTIVE_ACCOUNT_NAME_KEY] = account.name
+    session_state[ACTIVE_ACCOUNT_CONFIG_KEY] = dict(account.config)
+    for key, value in account.ui_state.items():
+        if key in _account_ui_state_keys():
+            session_state[key] = value
+    for key, value in account.runtime_state.items():
+        if _is_account_runtime_key(key):
+            session_state[key] = value
+
+
+def _account_ui_state_from_session(session_state) -> dict[str, object]:
+    return {
+        key: _json_safe_state_value(session_state[key])
+        for key in _account_ui_state_keys()
+        if key in session_state
+    }
+
+
+def _account_runtime_state_from_session(session_state) -> dict[str, object]:
+    return {
+        key: _json_safe_state_value(value)
+        for key, value in session_state.items()
+        if _is_account_runtime_key(str(key))
+    }
+
+
+def _account_ui_state_keys() -> set[str]:
+    return {
+        *TEMPLATE_UI_STATE_KEYS,
+        "hedge_margin_check_enabled",
+    }
+
+
+def _is_account_runtime_key(key: str) -> bool:
+    return key.startswith("calculator_") or key.startswith("hedge_margin_")
+
+
+def _clear_account_progress_state(session_state) -> None:
+    for key in list(session_state):
+        if _is_account_runtime_key(str(key)):
+            session_state.pop(key, None)
 
 
 def _template_applied_config(st, fallback: PropFirmConfig) -> PropFirmConfig:
@@ -301,6 +464,10 @@ def _template_ui_state_from_session(session_state) -> dict[str, object]:
 def _json_safe_state_value(value):
     if isinstance(value, (bool, int, float, str)) or value is None:
         return value
+    if isinstance(value, dict):
+        return {str(key): _json_safe_state_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_state_value(item) for item in value]
     return str(value)
 
 

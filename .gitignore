@@ -6,3 +6,4 @@ venv/
 .env
 .streamlit/secrets.toml
 .streamlit/prop_templates.json
+.streamlit/account_states.json

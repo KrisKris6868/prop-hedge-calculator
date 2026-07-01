@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 
 from prop_research.app.streamlit_app import (
+    _account_runtime_state_from_session,
+    _account_ui_state_from_session,
     _cap_prop_pnl_to_target,
     _consistency_status_display,
     _consistency_state_keys,
@@ -270,6 +272,30 @@ def test_template_ui_state_keeps_only_sidebar_setting_keys() -> None:
     ) == {
         "funded_consistency_enabled": True,
         "funded_consistency": 35.0,
+    }
+
+
+def test_account_state_keeps_settings_and_calculator_progress() -> None:
+    session_state = {
+        "funded_consistency_enabled": True,
+        "funded_consistency": 35.0,
+        "hedge_margin_check_enabled": True,
+        "calculator_current_prop_pnl": 1_900.0,
+        "calculator_stage_key": "phase_1",
+        "hedge_margin_last_working_inputs_phase_1": {"personal_risk": 120.0},
+        "random_ui_noise": "skip",
+    }
+
+    assert _account_ui_state_from_session(session_state) == {
+        "funded_consistency_enabled": True,
+        "funded_consistency": 35.0,
+        "hedge_margin_check_enabled": True,
+    }
+    assert _account_runtime_state_from_session(session_state) == {
+        "calculator_current_prop_pnl": 1_900.0,
+        "calculator_stage_key": "phase_1",
+        "hedge_margin_check_enabled": True,
+        "hedge_margin_last_working_inputs_phase_1": {"personal_risk": 120.0},
     }
 
 
