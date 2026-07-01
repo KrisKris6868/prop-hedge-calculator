@@ -30,7 +30,7 @@ from prop_research.app.streamlit_app import (
     _stage_options,
     _stage_profit_target,
 )
-from prop_research.config.account_states import AccountState, load_account_states, save_account_state
+from prop_research.config.account_states import AccountState, delete_account_state, load_account_states, save_account_state
 from prop_research.config.templates import (
     PropTemplate,
     load_prop_templates,
@@ -237,6 +237,31 @@ def create_account_state_from_template(
     )
 
 
+def rename_account_state(
+    account: AccountState,
+    new_name: str,
+    *,
+    existing_accounts: list[AccountState] | None = None,
+) -> AccountState:
+    clean_name = new_name.strip()
+    if not clean_name:
+        raise ValueError("account name must not be empty")
+    current_name = account.name.strip().lower()
+    for existing in existing_accounts or []:
+        if existing.name.strip().lower() == clean_name.lower() and existing.name.strip().lower() != current_name:
+            raise ValueError("account name already exists")
+    return AccountState(
+        name=clean_name,
+        config=dict(account.config),
+        ui_state=dict(account.ui_state),
+        runtime_state=dict(account.runtime_state),
+    )
+
+
+def apply_template_to_account_state(account: AccountState, template: PropTemplate) -> AccountState:
+    return create_account_state_from_template(account.name, template)
+
+
 def reset_account_runtime(account: AccountState) -> AccountState:
     config = prop_firm_from_template_config(account.config)
     first_stage_key = next(iter(_stage_options(config)))
@@ -282,6 +307,8 @@ def _render_sidebar(st, accounts: list[AccountState]) -> str | None:
     else:
         st.sidebar.caption("Создай первый рабочий счет из сохраненного шаблона.")
     _render_account_creator(st, accounts)
+    if selected is not None:
+        _render_account_manager(st, _selected_account(accounts, str(selected)), accounts)
     st.sidebar.caption("Classic v1 сохранен отдельно. Здесь только быстрый торговый экран.")
     return str(selected) if selected is not None else None
 
@@ -312,6 +339,48 @@ def _render_account_creator(st, accounts: list[AccountState]) -> None:
                 return
             save_account_state(USER_ACCOUNT_STATE_PATH, account)
             st.session_state["cockpit_pending_selected_account"] = account.name
+            st.rerun()
+
+
+def _render_account_manager(st, account: AccountState | None, accounts: list[AccountState]) -> None:
+    if account is None:
+        return
+    with st.sidebar.expander("Текущий счет", expanded=False):
+        new_name = st.text_input("Переименовать", value=account.name, key=f"cockpit_rename_{account.name}")
+        if st.button("Сохранить имя", use_container_width=True, key=f"cockpit_rename_btn_{account.name}"):
+            try:
+                renamed = rename_account_state(account, new_name, existing_accounts=accounts)
+            except ValueError as exc:
+                st.warning("Счет с таким именем уже есть." if "already exists" in str(exc) else "Напиши имя счета.")
+                return
+            if renamed.name != account.name:
+                delete_account_state(USER_ACCOUNT_STATE_PATH, account.name)
+            save_account_state(USER_ACCOUNT_STATE_PATH, renamed)
+            st.session_state["cockpit_pending_selected_account"] = renamed.name
+            st.rerun()
+
+        templates = load_prop_templates(USER_TEMPLATE_PATH)
+        templates_by_name = {template.name: template for template in templates}
+        if templates_by_name:
+            template_name = st.selectbox(
+                "Заменить настройки шаблоном",
+                list(templates_by_name),
+                key=f"cockpit_replace_template_{account.name}",
+            )
+            if st.button("Применить шаблон", use_container_width=True, key=f"cockpit_replace_btn_{account.name}"):
+                updated = apply_template_to_account_state(account, templates_by_name[template_name])
+                save_account_state(USER_ACCOUNT_STATE_PATH, updated)
+                st.session_state["cockpit_pending_selected_account"] = updated.name
+                st.rerun()
+        else:
+            st.caption("Нет сохраненных шаблонов для замены настроек.")
+
+        delete_enabled = st.checkbox("Удалить этот счет", key=f"cockpit_delete_confirm_{account.name}")
+        if st.button("Удалить", use_container_width=True, disabled=not delete_enabled, key=f"cockpit_delete_btn_{account.name}"):
+            delete_account_state(USER_ACCOUNT_STATE_PATH, account.name)
+            remaining_names = [item.name for item in accounts if item.name != account.name]
+            if remaining_names:
+                st.session_state["cockpit_pending_selected_account"] = remaining_names[0]
             st.rerun()
 
 

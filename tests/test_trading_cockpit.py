@@ -1,12 +1,16 @@
+from dataclasses import replace
+
 from prop_research.app.trading_cockpit import (
     _consistency_text,
     _funded_payout_values,
     _minimum_days_state,
     _minimum_days_text,
     _pnl_step_for_stage,
+    apply_template_to_account_state,
     build_account_summary,
     create_account_state_from_template,
     preview_account_state,
+    rename_account_state,
     reset_account_runtime,
 )
 from prop_research.config.account_states import AccountState
@@ -112,6 +116,77 @@ def test_create_account_state_from_template_rejects_duplicate_name() -> None:
         assert "already exists" in str(exc)
     else:
         raise AssertionError("duplicate account name was accepted")
+
+
+def test_rename_account_state_preserves_settings_and_runtime() -> None:
+    account = AccountState(
+        name="Old name",
+        config=prop_firm_to_template_config(make_config()),
+        ui_state={"phase_1_consistency_enabled": True},
+        runtime_state={"calculator_stage_key": "phase_1", "calculator_current_prop_pnl": 1_000.0},
+    )
+
+    renamed = rename_account_state(account, "  New name  ")
+
+    assert renamed.name == "New name"
+    assert renamed.config == account.config
+    assert renamed.ui_state == account.ui_state
+    assert renamed.runtime_state == account.runtime_state
+
+
+def test_rename_account_state_rejects_duplicate_name_except_itself() -> None:
+    account = AccountState(
+        name="Main account",
+        config=prop_firm_to_template_config(make_config()),
+        ui_state={},
+        runtime_state={},
+    )
+    existing = [
+        account,
+        AccountState(name="Second", config=account.config, ui_state={}, runtime_state={}),
+    ]
+
+    assert rename_account_state(account, " main account ", existing_accounts=existing).name == "main account"
+
+    try:
+        rename_account_state(account, "second", existing_accounts=existing)
+    except ValueError as exc:
+        assert "already exists" in str(exc)
+    else:
+        raise AssertionError("duplicate account rename was accepted")
+
+
+def test_apply_template_to_account_state_replaces_rules_and_resets_runtime() -> None:
+    old_config = make_config()
+    base_new_config = make_config()
+    new_config = replace(
+        base_new_config,
+        nominal_balance=50_000.0,
+        stages=[
+            replace(base_new_config.stages[0], max_risk_per_trade=900.0),
+            base_new_config.stages[1],
+        ],
+    )
+    account = AccountState(
+        name="Main account",
+        config=prop_firm_to_template_config(old_config),
+        ui_state={"phase_1_consistency_enabled": True},
+        runtime_state={"calculator_stage_key": "phase_2", "calculator_current_prop_pnl": 3_000.0},
+    )
+    template = PropTemplate(
+        name="New rules",
+        config=prop_firm_to_template_config(new_config),
+        ui_state={"phase_1_consistency_enabled": False},
+    )
+
+    updated = apply_template_to_account_state(account, template)
+
+    assert updated.name == account.name
+    assert updated.config == template.config
+    assert updated.ui_state == template.ui_state
+    assert updated.runtime_state["calculator_stage_key"] == "phase_1"
+    assert updated.runtime_state["calculator_current_prop_pnl"] == 0.0
+    assert updated.runtime_state["calculator_trade_risk_applied_phase_1"] == 900.0
 
 
 def test_preview_account_state_recalculates_lots_without_mutating_saved_account() -> None:
