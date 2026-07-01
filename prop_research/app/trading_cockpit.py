@@ -56,6 +56,8 @@ class CockpitSummary:
     consistency_text: str
     minimum_days_text: str
     personal_spent: float
+    initial_personal_balance: float
+    prop_account_size: float
     funded_profit: float
     funded_split_payout: float
     funded_net: float
@@ -164,6 +166,8 @@ def build_account_summary(account: AccountState) -> CockpitSummary:
         consistency_text=_consistency_text(account, stage_key, current_pnl),
         minimum_days_text=_minimum_days_text(account, config, stage_key, current_pnl),
         personal_spent=personal_spent,
+        initial_personal_balance=initial_personal_balance,
+        prop_account_size=float(config.nominal_balance),
         funded_profit=funded_profit,
         funded_split_payout=funded_split_payout,
         funded_net=funded_net,
@@ -269,6 +273,7 @@ def _render_account_workbench(st, account: AccountState) -> AccountState:
         "Текущий PnL",
         value=saved_summary.current_pnl,
         step=_pnl_step_for_stage(config, stage_key, saved_summary.current_pnl, risk),
+        help="Риск пропа задает шаг PnL. Нажимай +/- у PnL, чтобы быстро прокручивать путь по счету.",
         key=f"{widget_prefix}_pnl",
     )
     stop_default = _stop_points(account.runtime_state, stage_key)
@@ -285,18 +290,19 @@ def _render_account_workbench(st, account: AccountState) -> AccountState:
     if preview.runtime_state != account.runtime_state:
         _save_account(preview)
 
-    reset_col, spacer_col = st.columns([1, 3])
+    reset_col, initial_col, prop_col = st.columns([1, 1, 1])
     if reset_col.button("Сбросить путь", use_container_width=True, key=f"cockpit_reset_{account.name}"):
         _save_reset_account(account)
         st.session_state[f"cockpit_reset_version_{account.name}"] = widget_version + 1
         st.success("Путь сброшен.")
         st.rerun()
-    spacer_col.caption("Риск пропа задает шаг PnL. Нажимай +/- у PnL, чтобы быстро прокручивать путь по счету.")
+    initial_col.markdown(_compact_info_html("Начальный личный", _money(summary.initial_personal_balance)), unsafe_allow_html=True)
+    prop_col.markdown(_compact_info_html("Размер пропа", _money(summary.prop_account_size)), unsafe_allow_html=True)
 
     margin_label = "Маржа ок" if summary.margin_topup <= 0 else f"Докинуть {_money(summary.margin_topup)}"
     cards = [
-        _risk_card_html("Риск пропа", _money(summary.prop_risk), f"{summary.prop_lot:.2f} lot · стоп {stop_points:.0f}п"),
-        _risk_card_html("Риск личного hedge", _money(summary.personal_risk), f"{summary.hedge_lot:.2f} lot"),
+        _risk_card_html("Риск пропа", _money(summary.prop_risk), f"<strong>{summary.prop_lot:.2f} lot</strong> · стоп {stop_points:.0f}п"),
+        _risk_card_html("Риск личного hedge", _money(summary.personal_risk), f"<strong>{summary.hedge_lot:.2f} lot</strong>"),
         _metric_card_html("Текущий PnL", _money(summary.current_pnl), f"До цели {_money(summary.distance_to_target)}"),
         _metric_card_html("Баланс личного", _money(summary.personal_balance), "после текущего PnL"),
         _metric_card_html("Осталось до max loss", _money(summary.distance_to_max_loss), ""),
@@ -558,6 +564,15 @@ def _signal_card_html(label: str, value: str, state: str = "neutral") -> str:
     )
 
 
+def _compact_info_html(label: str, value: str) -> str:
+    return (
+        '<div class="compact-info">'
+        f'<span>{label}</span>'
+        f'<strong>{value}</strong>'
+        "</div>"
+    )
+
+
 def _metric_card(container, label: str, value: str, note: str) -> None:
     container.markdown(_metric_card_html(label, value, note), unsafe_allow_html=True)
 
@@ -596,6 +611,13 @@ def _inject_cockpit_css(st) -> None:
         .metric-value { color: #252a36; font-size: 29px; line-height: 1.08; font-weight: 650; overflow-wrap: anywhere; }
         .risk-value { color: #172033; font-size: 40px; line-height: 1; font-weight: 780; overflow-wrap: anywhere; }
         .metric-note { color: #8a91a0; font-size: 13px; margin-top: 9px; min-height: 16px; }
+        .metric-note strong { color: #252a36; font-weight: 800; }
+        .compact-info {
+            min-height: 48px; border: 1px solid #e6e8ee; border-radius: 8px; padding: 8px 14px;
+            display: flex; align-items: center; justify-content: space-between; gap: 12px; background: #ffffff;
+        }
+        .compact-info span { color: #7b8290; font-size: 13px; }
+        .compact-info strong { color: #252a36; font-size: 16px; font-weight: 760; white-space: nowrap; }
         .signal-card {
             min-height: 130px; border-radius: 8px; padding: 18px 20px;
             border: 1px solid #e0e7f1; background: #ffffff; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);

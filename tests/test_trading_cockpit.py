@@ -67,6 +67,8 @@ def test_build_account_summary_uses_saved_calculator_progress() -> None:
     assert summary.prop_lot == 19.0
     assert summary.hedge_lot > 0
     assert summary.distance_to_target == 4_100.0
+    assert summary.initial_personal_balance > 0
+    assert summary.prop_account_size == 100_000.0
 
 
 def test_preview_account_state_recalculates_lots_without_mutating_saved_account() -> None:
