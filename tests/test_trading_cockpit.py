@@ -1,6 +1,7 @@
 from dataclasses import replace
 
 from prop_research.app.trading_cockpit import (
+    _consistency_state,
     _consistency_text,
     _funded_payout_values,
     _minimum_days_state,
@@ -76,6 +77,54 @@ def test_build_account_summary_uses_saved_calculator_progress() -> None:
     assert summary.distance_to_target == 4_100.0
     assert summary.initial_personal_balance > 0
     assert summary.prop_account_size == 100_000.0
+
+
+def test_instant_economic_trailing_auto_caps_prop_risk_from_settings() -> None:
+    config = build_default_account_config("Инстант")
+    account = AccountState(
+        name="Instant",
+        config=prop_firm_to_template_config(config),
+        ui_state={
+            "instant_prop_risk_strategy": "Экономный trailing",
+            "instant_consistency_enabled": True,
+            "instant_consistency": 15.0,
+        },
+        runtime_state={
+            "calculator_stage_key": "funded",
+            "calculator_current_prop_pnl": 0.0,
+            "calculator_trade_risk_applied_funded": 900.0,
+            "calculator_stop_points_funded": 100.0,
+        },
+    )
+
+    summary = build_account_summary(account)
+
+    assert summary.prop_risk == 750.0
+
+
+def test_execution_buffer_increases_personal_risk_for_every_account_type() -> None:
+    base_account = AccountState(
+        name="PipFarm 100k",
+        config=prop_firm_to_template_config(make_config()),
+        ui_state={},
+        runtime_state={
+            "calculator_stage_key": "phase_1",
+            "calculator_current_prop_pnl": 0.0,
+            "calculator_stop_points_phase_1": 100.0,
+            "calculator_trade_risk_applied_phase_1": 1_000.0,
+        },
+    )
+    buffered_account = AccountState(
+        name=base_account.name,
+        config=base_account.config,
+        ui_state={"execution_buffer_mode": "normal_10"},
+        runtime_state=base_account.runtime_state,
+    )
+
+    base = build_account_summary(base_account)
+    buffered = build_account_summary(buffered_account)
+
+    assert buffered.personal_risk == round(base.personal_risk * 1.10, 2)
 
 
 def test_create_account_state_from_template_starts_clean_path() -> None:
@@ -345,7 +394,8 @@ def test_preview_records_pnl_change_as_stage_trade_and_largest_win() -> None:
     assert preview.runtime_state["calculator_trade_journal_phase_1"][-1]["pnl_delta"] == 1_000.0
     assert preview.runtime_state["calculator_largest_winning_trade_phase_1"] == 1_000.0
     assert _consistency_text(preview, "phase_1", 5_500.0) != "Сделок не было"
-    assert _consistency_text(preview, "phase_1", 5_500.0) == "max $1,000.00 · 35% ✓"
+    assert _consistency_text(preview, "phase_1", 5_500.0) == "max $1,000.00<br>35%"
+    assert _consistency_state(preview, "phase_1", 5_500.0) == "ok"
 
 
 def test_preview_records_losing_pnl_change_without_increasing_largest_win() -> None:
@@ -403,7 +453,8 @@ def test_consistency_text_falls_back_to_current_positive_pnl_for_legacy_state() 
         runtime_state={"calculator_stage_key": "phase_1", "calculator_largest_winning_trade_phase_1": 0.0},
     )
 
-    assert _consistency_text(account, "phase_1", 5_500.0) == "max $5,500.00 · 35% ✕"
+    assert _consistency_text(account, "phase_1", 5_500.0) == "max $5,500.00<br>35%"
+    assert _consistency_state(account, "phase_1", 5_500.0) == "warn"
 
 
 def test_minimum_days_text_is_compact_fraction_or_dash() -> None:

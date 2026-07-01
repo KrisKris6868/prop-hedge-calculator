@@ -20,10 +20,12 @@ from prop_research.app.streamlit_app import (
     _account_type,
     _consistency_state_keys,
     _default_prop_risk_percent,
+    _economic_trailing_prop_risk,
     _hedge_margin_liquidity,
     _lot_from_risk_and_stop_points,
     _next_stage_key,
     _next_stage_label,
+    _personal_risk_with_execution_buffer,
     _profitable_days_from_pnl,
     _risk_percent_from_amount,
     _stage_max_risk,
@@ -108,7 +110,8 @@ def build_account_summary(account: AccountState) -> CockpitSummary:
         stage_key = next(iter(stage_options))
     current_pnl = _float_state(runtime, "calculator_current_prop_pnl", 0.0)
     stop_points = _float_state(runtime, f"calculator_stop_points_{stage_key}", 100.0)
-    prop_risk = _float_state(runtime, f"calculator_trade_risk_applied_{stage_key}", _stage_max_risk(config, stage_key))
+    manual_prop_risk = _float_state(runtime, f"calculator_trade_risk_applied_{stage_key}", _stage_max_risk(config, stage_key))
+    prop_risk = _prop_risk_for_account_strategy(config, ui_state, stage_key, current_pnl, manual_prop_risk)
     prop_risk_percent = _risk_percent_from_amount(prop_risk, config.nominal_balance)
     trailing_mode = _trailing_mode_from_ui(ui_state)
     initial_personal_balance = _initial_personal_balance(config, prop_risk_percent, trailing_mode)
@@ -142,7 +145,8 @@ def build_account_summary(account: AccountState) -> CockpitSummary:
         trailing_risk_mode=trailing_mode,
     )
     effective_prop_risk = float(trade["Риск пропа, $"])
-    personal_risk = _finite_amount(float(trade["Риск личного, $"]))
+    base_personal_risk = _finite_amount(float(trade["Риск личного, $"]))
+    personal_risk = _personal_risk_with_execution_buffer(base_personal_risk, _execution_buffer_mode(ui_state))
     prop_lot = _lot_from_risk_and_stop_points(effective_prop_risk, stop_points)
     hedge_lot = _lot_from_risk_and_stop_points(personal_risk, stop_points)
     margin_topup = _margin_topup_for_runtime(runtime, stage_key, personal_balance, personal_risk, stop_points)
@@ -458,6 +462,8 @@ def _default_ui_state_for_kind(account_kind: str) -> dict[str, object]:
             "minimum_profitable_days_required": 5,
             "minimum_profitable_day_percent": 0.5,
             "trailing_risk_mode_label_v2": "Адаптивная",
+            "execution_buffer_mode": "off",
+            "instant_prop_risk_strategy": "Вручную",
         }
     return {
         "phase_1_consistency_enabled": False,
@@ -470,6 +476,8 @@ def _default_ui_state_for_kind(account_kind: str) -> dict[str, object]:
         "minimum_profitable_days_required": 5,
         "minimum_profitable_day_percent": 0.5,
         "trailing_risk_mode_label_v2": "Консервативная",
+        "execution_buffer_mode": "off",
+        "instant_prop_risk_strategy": "Вручную",
     }
 
 
@@ -531,6 +539,26 @@ def _render_account_settings(st, account: AccountState | None) -> None:
             index=_trailing_label_index(account.ui_state),
             key=f"settings_trailing_{account.name}",
         )
+        execution_buffer_mode = st.selectbox(
+            "Execution buffer",
+            ["off", "light_5", "normal_10", "safety_15"],
+            index=_execution_buffer_index(account.ui_state),
+            format_func={
+                "off": "Без buffer",
+                "light_5": "5% spread/slippage",
+                "normal_10": "10% spread/slippage",
+                "safety_15": "15% spread/slippage",
+            }.get,
+            key=f"settings_execution_buffer_{account.name}",
+        )
+        instant_prop_risk_strategy = str(account.ui_state.get("instant_prop_risk_strategy", "Вручную"))
+        if kind == "Инстант":
+            instant_prop_risk_strategy = st.selectbox(
+                "Стратегия риска пропа",
+                ["Вручную", "Экономный trailing"],
+                index=0 if instant_prop_risk_strategy != "Экономный trailing" else 1,
+                key=f"settings_instant_prop_risk_strategy_{account.name}",
+            )
 
         stage_settings: list[dict[str, object]] = []
         if kind != "Инстант":
@@ -619,52 +647,9 @@ def _render_account_settings(st, account: AccountState | None) -> None:
 
         ui_state = dict(account.ui_state)
         ui_state["trailing_risk_mode_label_v2"] = trailing_label
+        ui_state["execution_buffer_mode"] = execution_buffer_mode
+        ui_state["instant_prop_risk_strategy"] = instant_prop_risk_strategy
         _render_rule_settings(st, ui_state, account.name, kind)
-        st.markdown("**Ликвидность личного брокера**")
-        leverage = st.number_input(
-            "Плечо",
-            value=_float_state(account.runtime_state, "hedge_margin_leverage_global", 300.0),
-            min_value=1.0,
-            step=50.0,
-            key=f"settings_margin_leverage_{account.name}",
-        )
-        stop_out = st.number_input(
-            "Stop out, %",
-            value=_float_state(account.runtime_state, "hedge_margin_stop_out_global", 50.0),
-            min_value=1.0,
-            max_value=100.0,
-            step=5.0,
-            key=f"settings_margin_stopout_{account.name}",
-        )
-        eurusd_price = st.number_input(
-            "Цена EURUSD",
-            value=_float_state(account.runtime_state, "hedge_margin_eurusd_price_global", 1.14),
-            min_value=0.1,
-            step=0.01,
-            format="%.5f",
-            key=f"settings_margin_eurusd_{account.name}",
-        )
-        spread_points = st.number_input(
-            "Спред, пункты",
-            value=_float_state(account.runtime_state, "hedge_margin_spread_points_global", 0.0),
-            min_value=0.0,
-            step=1.0,
-            key=f"settings_margin_spread_{account.name}",
-        )
-        commission = st.number_input(
-            "Комиссия / mio",
-            value=_float_state(account.runtime_state, "hedge_margin_commission_global", 10.0),
-            min_value=0.0,
-            step=1.0,
-            key=f"settings_margin_commission_{account.name}",
-        )
-        extra_liquidity = st.number_input(
-            "Неприкосновенный запас, $",
-            value=_float_state(account.runtime_state, "hedge_margin_extra_liquidity_global", 0.0),
-            min_value=0.0,
-            step=50.0,
-            key=f"settings_margin_extra_{account.name}",
-        )
 
         if st.button("Сохранить настройки счета", use_container_width=True, key=f"settings_save_{account.name}"):
             stages = [
@@ -696,26 +681,6 @@ def _render_account_settings(st, account: AccountState | None) -> None:
                 account_type="instant" if kind == "Инстант" else "challenge",
             )
             updated = apply_config_to_account_state(account, updated_config, ui_state=ui_state)
-            runtime = dict(updated.runtime_state)
-            margin_settings = {
-                "hedge_margin_leverage": float(leverage),
-                "hedge_margin_stop_out": float(stop_out),
-                "hedge_margin_eurusd_price": float(eurusd_price),
-                "hedge_margin_spread_points": float(spread_points),
-                "hedge_margin_commission": float(commission),
-                "hedge_margin_extra_liquidity": float(extra_liquidity),
-            }
-            for key, value in margin_settings.items():
-                runtime[f"{key}_global"] = value
-            for stage_key in _stage_options(updated_config):
-                for key, value in margin_settings.items():
-                    runtime[f"{key}_{stage_key}"] = value
-            updated = AccountState(
-                name=updated.name,
-                config=updated.config,
-                ui_state=updated.ui_state,
-                runtime_state=runtime,
-            )
             save_account_state(USER_ACCOUNT_STATE_PATH, updated)
             st.session_state["cockpit_pending_selected_account"] = updated.name
             st.session_state[f"cockpit_reset_version_{account.name}"] = int(st.session_state.get(f"cockpit_reset_version_{account.name}", 0)) + 1
@@ -769,6 +734,12 @@ def _trailing_label_index(ui_state: dict) -> int:
     return labels.index(current) if current in labels else 0
 
 
+def _execution_buffer_index(ui_state: dict) -> int:
+    modes = ["off", "light_5", "normal_10", "safety_15"]
+    current = str(ui_state.get("execution_buffer_mode", "off"))
+    return modes.index(current) if current in modes else 0
+
+
 def _render_accounts_dashboard(st, pd, summaries: list[CockpitSummary]) -> None:
     with st.expander("Все активные счета", expanded=False):
         rows = [
@@ -802,12 +773,14 @@ def _render_account_workbench(st, account: AccountState) -> AccountState:
         format_func=stage_options.get,
         key=f"{widget_prefix}_stage",
     )
-    risk_default = _float_state(account.runtime_state, f"calculator_trade_risk_applied_{stage_key}", _stage_max_risk(config, stage_key))
+    auto_prop_risk = _uses_auto_prop_risk(config, account.ui_state, stage_key)
+    risk_default = saved_summary.prop_risk if auto_prop_risk else _float_state(account.runtime_state, f"calculator_trade_risk_applied_{stage_key}", _stage_max_risk(config, stage_key))
     risk = control_2.number_input(
         "Риск пропа",
         value=risk_default,
         min_value=1.0,
         step=100.0,
+        disabled=auto_prop_risk,
         key=f"{widget_prefix}_risk_{stage_key}",
     )
     pnl = control_3.number_input(
@@ -848,7 +821,7 @@ def _render_account_workbench(st, account: AccountState) -> AccountState:
         _metric_card_html("Баланс личного", _money(summary.personal_balance), "после текущего PnL"),
         _metric_card_html("Осталось до max loss", _money(summary.distance_to_max_loss), ""),
         _signal_card_html("Ликвидность", margin_label, "ok" if summary.margin_topup <= 0 else "danger"),
-        _signal_card_html("Consistency", summary.consistency_text, _consistency_state(summary.consistency_text)),
+        _signal_card_html("Consistency", summary.consistency_text, _consistency_state(preview, stage_key, summary.current_pnl)),
         _signal_card_html("Минимальные дни", summary.minimum_days_text, _minimum_days_state(summary.minimum_days_text)),
         _metric_card_html("Потрачено личных", _money(summary.personal_spent), "по текущему пути"),
     ]
@@ -865,6 +838,7 @@ def _render_account_workbench(st, account: AccountState) -> AccountState:
             ],
             columns=4,
         )
+    _render_margin_panel(st, preview, summary, stop_points)
     return preview
 
 
@@ -874,6 +848,108 @@ def _save_reset_account(account: AccountState) -> None:
 
 def _save_account(account: AccountState) -> None:
     save_account_state(USER_ACCOUNT_STATE_PATH, account)
+
+
+def _render_margin_panel(st, account: AccountState, summary: CockpitSummary, stop_points: float) -> None:
+    stage_key = summary.stage_key
+    runtime = account.runtime_state
+    with st.expander("Ликвидность личного hedge", expanded=False):
+        col_1, col_2, col_3 = st.columns(3)
+        leverage = col_1.number_input(
+            "Плечо",
+            value=_float_state(runtime, f"hedge_margin_leverage_{stage_key}", 300.0),
+            min_value=1.0,
+            step=50.0,
+            key=f"margin_panel_leverage_{account.name}_{stage_key}",
+        )
+        stop_out = col_2.number_input(
+            "Stop out, %",
+            value=_float_state(runtime, f"hedge_margin_stop_out_{stage_key}", 50.0),
+            min_value=1.0,
+            max_value=100.0,
+            step=5.0,
+            key=f"margin_panel_stopout_{account.name}_{stage_key}",
+        )
+        extra_liquidity = col_3.number_input(
+            "Неприкосновенный запас, $",
+            value=_float_state(runtime, f"hedge_margin_extra_liquidity_{stage_key}", 0.0),
+            min_value=0.0,
+            step=50.0,
+            key=f"margin_panel_extra_{account.name}_{stage_key}",
+        )
+
+        col_4, col_5, col_6 = st.columns(3)
+        eurusd_price = col_4.number_input(
+            "Цена EURUSD",
+            value=_float_state(runtime, f"hedge_margin_eurusd_price_{stage_key}", 1.14),
+            min_value=0.1,
+            step=0.01,
+            format="%.5f",
+            key=f"margin_panel_eurusd_{account.name}_{stage_key}",
+        )
+        spread_points = col_5.number_input(
+            "Спред, пункты",
+            value=_float_state(runtime, f"hedge_margin_spread_points_{stage_key}", 0.0),
+            min_value=0.0,
+            step=1.0,
+            key=f"margin_panel_spread_{account.name}_{stage_key}",
+        )
+        commission = col_6.number_input(
+            "Комиссия / mio",
+            value=_float_state(runtime, f"hedge_margin_commission_{stage_key}", 10.0),
+            min_value=0.0,
+            step=1.0,
+            key=f"margin_panel_commission_{account.name}_{stage_key}",
+        )
+
+        liquidity = _hedge_margin_liquidity(
+            personal_risk=summary.personal_risk,
+            stop_points_5_digit=stop_points,
+            leverage=float(leverage),
+            eurusd_price=float(eurusd_price),
+            broker_deposit=summary.personal_balance + float(extra_liquidity),
+            spread_points_5_digit=float(spread_points),
+            commission_per_million_per_side=float(commission),
+            stop_out_percent=float(stop_out),
+        )
+        _card_grid(
+            st,
+            [
+                _metric_card_html("Лот hedge", f"{liquidity['Лот hedge']:.2f}", ""),
+                _metric_card_html("Маржа нужна", _money(liquidity["Маржа нужна, $"]), ""),
+                _metric_card_html("Критический equity", _money(liquidity["Критический equity Stop Out, $"]), ""),
+                _metric_card_html("Equity после стопа", _money(liquidity["Equity после стопа, $"]), ""),
+                _metric_card_html("Запас до Stop Out", _money(liquidity["Запас до Stop Out после стопа, $"]), ""),
+                _metric_card_html("Комиссия+спред", _money(liquidity["Комиссия+спред, $"]), ""),
+            ],
+        )
+        topup = max(float(liquidity["Докинуть под маржу, $"]), float(liquidity["Докинуть чтобы стоп выдержал, $"]))
+        st.markdown(
+            _signal_card_html("Итог ликвидности", "Маржа ок" if topup <= 0 else f"Докинуть {_money(topup)}", "ok" if topup <= 0 else "danger"),
+            unsafe_allow_html=True,
+        )
+        if st.button("Сохранить параметры ликвидности", use_container_width=True, key=f"margin_panel_save_{account.name}_{stage_key}"):
+            updated_runtime = dict(account.runtime_state)
+            margin_settings = {
+                "hedge_margin_leverage": float(leverage),
+                "hedge_margin_stop_out": float(stop_out),
+                "hedge_margin_eurusd_price": float(eurusd_price),
+                "hedge_margin_spread_points": float(spread_points),
+                "hedge_margin_commission": float(commission),
+                "hedge_margin_extra_liquidity": float(extra_liquidity),
+            }
+            for key, value in margin_settings.items():
+                updated_runtime[f"{key}_{stage_key}"] = value
+                updated_runtime[f"{key}_global"] = value
+            _save_account(
+                AccountState(
+                    name=account.name,
+                    config=account.config,
+                    ui_state=account.ui_state,
+                    runtime_state=updated_runtime,
+                )
+            )
+            st.rerun()
 
 
 def _record_pnl_trade(runtime: dict, *, stage_key: str, previous_pnl: float, next_pnl: float) -> None:
@@ -913,6 +989,42 @@ def _initial_personal_balance(config: PropFirmConfig, prop_risk_percent: float, 
             trailing_risk_mode=trailing_mode,
         ).minimum_personal_deposit
     )
+
+
+def _prop_risk_for_account_strategy(
+    config: PropFirmConfig,
+    ui_state: dict,
+    stage_key: str,
+    current_pnl: float,
+    manual_risk: float,
+) -> float:
+    if not _uses_auto_prop_risk(config, ui_state, stage_key):
+        return float(manual_risk)
+    recommended_risk, _reason = _economic_trailing_prop_risk(
+        max_risk_per_trade=_stage_max_risk(config, stage_key),
+        nominal_balance=config.nominal_balance,
+        current_prop_pnl=current_pnl,
+        profit_target=config.funded.profit_target_for_first_payout,
+        consistency_enabled=bool(ui_state.get("instant_consistency_enabled", False)),
+        consistency_percent=_float_state(ui_state, "instant_consistency", 0.0),
+        minimum_days_enabled=bool(ui_state.get("minimum_profitable_days_enabled", False)),
+        minimum_day_percent=_float_state(ui_state, "minimum_profitable_day_percent", 0.0),
+        minimum_days_required=int(_float_state(ui_state, "minimum_profitable_days_required", 0.0)),
+    )
+    return round(max(1.0, float(recommended_risk)), 2)
+
+
+def _uses_auto_prop_risk(config: PropFirmConfig, ui_state: dict, stage_key: str) -> bool:
+    return (
+        _account_type(config) == "instant"
+        and stage_key in {"funded", "funded_next"}
+        and str(ui_state.get("instant_prop_risk_strategy", "Вручную")) == "Экономный trailing"
+        and config.funded.drawdown_mode == "trailing"
+    )
+
+
+def _execution_buffer_mode(ui_state: dict) -> str:
+    return str(ui_state.get("execution_buffer_mode", "off"))
 
 
 def _margin_topup_for_runtime(runtime: dict, stage_key: str, personal_balance: float, personal_risk: float, stop_points: float) -> float:
@@ -966,9 +1078,7 @@ def _consistency_text(account: AccountState, stage_key: str, current_pnl: float)
         return "—"
     if rule_percent <= 0 or largest_profit <= 0:
         return "Сделок не было"
-    required_profit = largest_profit / (rule_percent / 100)
-    marker = "✓" if current_pnl >= required_profit else "✕"
-    return f"max {_money(largest_profit)} · {rule_percent:g}% {marker}"
+    return f"max {_money(largest_profit)}<br>{rule_percent:g}%"
 
 
 def _minimum_days_text(account: AccountState, config: PropFirmConfig, stage_key: str, current_pnl: float) -> str:
@@ -1002,10 +1112,21 @@ def _funded_payout_values(
     return (profit, split_payout, net, cleanest)
 
 
-def _consistency_state(value: str) -> str:
-    if value == "—":
+def _consistency_state(account: AccountState, stage_key: str, current_pnl: float) -> str:
+    config = prop_firm_from_template_config(account.config)
+    account_type = _account_type(config)
+    enabled_key, percent_key = _consistency_state_keys(account_type, stage_key)
+    enabled = bool(account.ui_state.get(enabled_key, False))
+    rule_percent = _float_state(account.ui_state, percent_key, 0.0)
+    largest_profit = _float_state(account.runtime_state, f"calculator_largest_winning_trade_{stage_key}", 0.0)
+    if largest_profit <= 0 and current_pnl > 0:
+        largest_profit = float(current_pnl)
+    if not enabled:
         return "neutral"
-    if "✓" in value:
+    if rule_percent <= 0 or largest_profit <= 0:
+        return "warn"
+    required_profit = largest_profit / (rule_percent / 100)
+    if current_pnl >= required_profit:
         return "ok"
     return "warn"
 
@@ -1097,9 +1218,12 @@ def _risk_card_html(label: str, value: str, note: str) -> str:
 
 def _signal_card_html(label: str, value: str, state: str = "neutral") -> str:
     safe_state = state if state in {"ok", "danger", "warn", "neutral"} else "neutral"
+    marker = ""
+    if label == "Consistency" and safe_state in {"ok", "warn"}:
+        marker = '<span class="signal-marker">' + ("✓" if safe_state == "ok" else "×") + "</span>"
     return (
         f'<div class="signal-card signal-{safe_state}">'
-        f'<div class="signal-label">{label}</div>'
+        f'<div class="signal-label">{label}{marker}</div>'
         f'<div class="signal-value">{value}</div>'
         "</div>"
     )
@@ -1163,7 +1287,11 @@ def _inject_cockpit_css(st) -> None:
             min-height: 130px; border-radius: 8px; padding: 18px 20px;
             border: 1px solid #e0e7f1; background: #ffffff; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
         }
-        .signal-label { color: #69707f; font-size: 13px; margin-bottom: 9px; }
+        .signal-label { color: #69707f; font-size: 13px; margin-bottom: 9px; display: flex; align-items: center; gap: 8px; }
+        .signal-marker {
+            width: 20px; height: 20px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center;
+            font-size: 15px; font-weight: 850; line-height: 1; background: rgba(255,255,255,0.7);
+        }
         .signal-value { color: #252a36; font-size: 24px; line-height: 1.15; font-weight: 780; overflow-wrap: anywhere; }
         .signal-ok { background: #eaf8ef; border-color: #bee8cc; }
         .signal-ok .signal-value { color: #087a34; }
