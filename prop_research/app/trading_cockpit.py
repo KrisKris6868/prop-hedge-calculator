@@ -529,33 +529,33 @@ def _card_grid(st, cards: list[str], columns: int = 3) -> None:
 
 
 def _metric_card_html(label: str, value: str, note: str) -> str:
-    return f"""
-    <div class="metric-card">
-      <div class="metric-label">{label}</div>
-      <div class="metric-value">{value}</div>
-      <div class="metric-note">{note}</div>
-    </div>
-    """
+    return (
+        '<div class="metric-card">'
+        f'<div class="metric-label">{label}</div>'
+        f'<div class="metric-value">{value}</div>'
+        f'<div class="metric-note">{note}</div>'
+        "</div>"
+    )
 
 
 def _risk_card_html(label: str, value: str, note: str) -> str:
-    return f"""
-    <div class="risk-card">
-      <div class="metric-label">{label}</div>
-      <div class="risk-value">{value}</div>
-      <div class="metric-note">{note}</div>
-    </div>
-    """
+    return (
+        '<div class="risk-card">'
+        f'<div class="metric-label">{label}</div>'
+        f'<div class="risk-value">{value}</div>'
+        f'<div class="metric-note">{note}</div>'
+        "</div>"
+    )
 
 
 def _signal_card_html(label: str, value: str, state: str = "neutral") -> str:
     safe_state = state if state in {"ok", "danger", "warn", "neutral"} else "neutral"
-    return f"""
-    <div class="signal-card signal-{safe_state}">
-      <div class="signal-label">{label}</div>
-      <div class="signal-value">{value}</div>
-    </div>
-    """
+    return (
+        f'<div class="signal-card signal-{safe_state}">'
+        f'<div class="signal-label">{label}</div>'
+        f'<div class="signal-value">{value}</div>'
+        "</div>"
+    )
 
 
 def _metric_card(container, label: str, value: str, note: str) -> None:
