@@ -37,7 +37,7 @@ from prop_research.config.templates import (
     prop_firm_from_template_config,
     prop_firm_to_template_config,
 )
-from prop_research.domain.config import PropFirmConfig
+from prop_research.domain.config import FundedConfig, PropFirmConfig, StageConfig
 
 USER_ACCOUNT_STATE_PATH = PROJECT_ROOT / ".streamlit" / "account_states.json"
 USER_TEMPLATE_PATH = PROJECT_ROOT / ".streamlit" / "prop_templates.json"
@@ -84,7 +84,7 @@ def main() -> None:
     st.markdown('<div class="cockpit-subtitle">Счета, риск, лотность и маржа в одном рабочем экране.</div>', unsafe_allow_html=True)
 
     if not accounts:
-        st.markdown('<div class="empty-panel">Нет сохраненных рабочих счетов. Создай путь в classic-калькуляторе и вернись сюда.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="empty-panel">Нет сохраненных рабочих счетов. Создай счет слева: с нуля или из шаблона.</div>', unsafe_allow_html=True)
         return
 
     selected_account = _selected_account(accounts, selected_name)
@@ -199,6 +199,87 @@ def preview_account_state(account: AccountState, *, stage_key: str, pnl: float, 
     )
 
 
+def build_default_account_config(account_kind: str) -> PropFirmConfig:
+    clean_kind = account_kind.strip().lower()
+    if clean_kind in {"instant", "инстант"}:
+        funded = FundedConfig(
+            profit_target_for_first_payout=5_000.0,
+            max_loss=6_000.0,
+            daily_loss=3_000.0,
+            max_risk_per_trade=900.0,
+            trader_split=0.8,
+            drawdown_mode="trailing",
+        )
+        return PropFirmConfig(
+            challenge_fee=350.0,
+            nominal_balance=100_000.0,
+            stages=[],
+            funded=funded,
+            prop_risk_per_trade=900.0,
+            account_type="instant",
+        )
+
+    stage_count = 1 if clean_kind in {"1 фаза", "1 phase", "one phase"} else 2
+    stages = [
+        StageConfig(
+            name="phase_1",
+            profit_target=6_000.0,
+            max_loss=8_000.0,
+            daily_loss=4_000.0,
+            max_risk_per_trade=1_900.0,
+            drawdown_mode="static",
+        )
+    ]
+    if stage_count == 2:
+        stages.append(
+            StageConfig(
+                name="phase_2",
+                profit_target=5_000.0,
+                max_loss=8_000.0,
+                daily_loss=4_000.0,
+                max_risk_per_trade=1_500.0,
+                drawdown_mode="static",
+            )
+        )
+    funded = FundedConfig(
+        profit_target_for_first_payout=5_000.0,
+        max_loss=8_000.0,
+        daily_loss=4_000.0,
+        max_risk_per_trade=1_000.0,
+        trader_split=0.8,
+        drawdown_mode="static",
+    )
+    return PropFirmConfig(
+        challenge_fee=200.0,
+        nominal_balance=100_000.0,
+        stages=stages,
+        funded=funded,
+        prop_risk_per_trade=float(stages[0].max_risk_per_trade or 1_000.0),
+        account_type="challenge",
+    )
+
+
+def create_account_state_from_config(
+    name: str,
+    config: PropFirmConfig,
+    *,
+    ui_state: dict | None = None,
+    existing_accounts: list[AccountState] | None = None,
+) -> AccountState:
+    clean_name = name.strip()
+    if not clean_name:
+        raise ValueError("account name must not be empty")
+    existing_names = {account.name.strip().lower() for account in existing_accounts or []}
+    if clean_name.lower() in existing_names:
+        raise ValueError("account name already exists")
+    return AccountState(
+        name=clean_name,
+        config=prop_firm_to_template_config(config),
+        ui_state=dict(ui_state or {}),
+        runtime_state=_initial_runtime_for_config(config),
+    )
+
+
 def create_account_state_from_template(
     name: str,
     template: PropTemplate,
@@ -212,28 +293,11 @@ def create_account_state_from_template(
     if clean_name.lower() in existing_names:
         raise ValueError("account name already exists")
 
-    config = prop_firm_from_template_config(template.config)
-    stage_options = _stage_options(config)
-    first_stage_key = next(iter(stage_options))
-    runtime: dict[str, object] = {
-        "calculator_stage_key": first_stage_key,
-        "calculator_previous_stage_key": first_stage_key,
-        "calculator_current_prop_pnl": 0.0,
-        "calculator_completed_personal_spent": 0.0,
-        "calculator_funded_next_start_balance": 0.0,
-    }
-    for stage_key in stage_options:
-        runtime[f"calculator_stop_points_{stage_key}"] = 100.0
-        runtime[f"calculator_trade_risk_applied_{stage_key}"] = round(_stage_max_risk(config, stage_key), 2)
-        runtime[f"calculator_largest_winning_trade_{stage_key}"] = 0.0
-        runtime[f"calculator_trailing_high_watermark_{stage_key}"] = 0.0
-        runtime[f"calculator_trade_journal_{stage_key}"] = []
-
-    return AccountState(
-        name=clean_name,
-        config=dict(template.config),
-        ui_state=dict(template.ui_state),
-        runtime_state=runtime,
+    return create_account_state_from_config(
+        clean_name,
+        prop_firm_from_template_config(template.config),
+        ui_state=template.ui_state,
+        existing_accounts=existing_accounts,
     )
 
 
@@ -260,6 +324,29 @@ def rename_account_state(
 
 def apply_template_to_account_state(account: AccountState, template: PropTemplate) -> AccountState:
     return create_account_state_from_template(account.name, template)
+
+
+def apply_config_to_account_state(account: AccountState, config: PropFirmConfig, ui_state: dict | None = None) -> AccountState:
+    return create_account_state_from_config(account.name, config, ui_state=ui_state if ui_state is not None else account.ui_state)
+
+
+def _initial_runtime_for_config(config: PropFirmConfig) -> dict[str, object]:
+    stage_options = _stage_options(config)
+    first_stage_key = next(iter(stage_options))
+    runtime: dict[str, object] = {
+        "calculator_stage_key": first_stage_key,
+        "calculator_previous_stage_key": first_stage_key,
+        "calculator_current_prop_pnl": 0.0,
+        "calculator_completed_personal_spent": 0.0,
+        "calculator_funded_next_start_balance": 0.0,
+    }
+    for stage_key in stage_options:
+        runtime[f"calculator_stop_points_{stage_key}"] = 100.0
+        runtime[f"calculator_trade_risk_applied_{stage_key}"] = round(_stage_max_risk(config, stage_key), 2)
+        runtime[f"calculator_largest_winning_trade_{stage_key}"] = 0.0
+        runtime[f"calculator_trailing_high_watermark_{stage_key}"] = 0.0
+        runtime[f"calculator_trade_journal_{stage_key}"] = []
+    return runtime
 
 
 def reset_account_runtime(account: AccountState) -> AccountState:
@@ -309,6 +396,7 @@ def _render_sidebar(st, accounts: list[AccountState]) -> str | None:
     _render_account_creator(st, accounts)
     if selected is not None:
         _render_account_manager(st, _selected_account(accounts, str(selected)), accounts)
+        _render_account_settings(st, _selected_account(accounts, str(selected)))
     st.sidebar.caption("Classic v1 сохранен отдельно. Здесь только быстрый торговый экран.")
     return str(selected) if selected is not None else None
 
@@ -317,16 +405,35 @@ def _render_account_creator(st, accounts: list[AccountState]) -> None:
     templates = load_prop_templates(USER_TEMPLATE_PATH)
     templates_by_name = {template.name: template for template in templates}
     with st.sidebar.expander("Новый счет", expanded=not accounts):
-        if not templates_by_name:
-            st.caption("Сначала сохрани шаблон в classic-калькуляторе.")
-            return
-        template_name = st.selectbox("Шаблон", list(templates_by_name), key="cockpit_new_account_template")
+        source = st.radio("Источник", ["С нуля", "Из шаблона"], horizontal=True, key="cockpit_new_account_source")
         account_name = st.text_input(
-            "Имя счета",
+            "Имя нового счета",
             value=str(st.session_state.get("cockpit_new_account_name", "")),
-            placeholder=template_name,
+            placeholder="Например: ПипФарм 100к 2ф",
             key="cockpit_new_account_name",
         )
+        if source == "С нуля":
+            account_kind = st.selectbox("Тип", ["2 фазы", "1 фаза", "Инстант"], key="cockpit_new_account_kind")
+            if st.button("Создать счет", use_container_width=True, key="cockpit_create_account"):
+                try:
+                    account = create_account_state_from_config(
+                        account_name or account_kind,
+                        build_default_account_config(account_kind),
+                        ui_state=_default_ui_state_for_kind(account_kind),
+                        existing_accounts=accounts,
+                    )
+                except ValueError as exc:
+                    st.warning("Счет с таким именем уже есть." if "already exists" in str(exc) else "Напиши имя счета.")
+                    return
+                save_account_state(USER_ACCOUNT_STATE_PATH, account)
+                st.session_state["cockpit_pending_selected_account"] = account.name
+                st.rerun()
+            return
+
+        if not templates_by_name:
+            st.caption("Сначала сохрани шаблон в classic-калькуляторе или создай счет с нуля.")
+            return
+        template_name = st.selectbox("Шаблон", list(templates_by_name), key="cockpit_new_account_template")
         if st.button("Создать счет", use_container_width=True, key="cockpit_create_account"):
             try:
                 account = create_account_state_from_template(
@@ -340,6 +447,30 @@ def _render_account_creator(st, accounts: list[AccountState]) -> None:
             save_account_state(USER_ACCOUNT_STATE_PATH, account)
             st.session_state["cockpit_pending_selected_account"] = account.name
             st.rerun()
+
+
+def _default_ui_state_for_kind(account_kind: str) -> dict[str, object]:
+    if account_kind == "Инстант":
+        return {
+            "instant_consistency_enabled": False,
+            "instant_consistency": 15.0,
+            "minimum_profitable_days_enabled": False,
+            "minimum_profitable_days_required": 5,
+            "minimum_profitable_day_percent": 0.5,
+            "trailing_risk_mode_label_v2": "Адаптивная",
+        }
+    return {
+        "phase_1_consistency_enabled": False,
+        "phase_1_consistency": 35.0,
+        "phase_2_consistency_enabled": False,
+        "phase_2_consistency": 35.0,
+        "funded_consistency_enabled": False,
+        "funded_consistency": 35.0,
+        "minimum_profitable_days_enabled": False,
+        "minimum_profitable_days_required": 5,
+        "minimum_profitable_day_percent": 0.5,
+        "trailing_risk_mode_label_v2": "Консервативная",
+    }
 
 
 def _render_account_manager(st, account: AccountState | None, accounts: list[AccountState]) -> None:
@@ -382,6 +513,260 @@ def _render_account_manager(st, account: AccountState | None, accounts: list[Acc
             if remaining_names:
                 st.session_state["cockpit_pending_selected_account"] = remaining_names[0]
             st.rerun()
+
+
+def _render_account_settings(st, account: AccountState | None) -> None:
+    if account is None:
+        return
+    config = prop_firm_from_template_config(account.config)
+    with st.sidebar.expander("Настройки счета", expanded=False):
+        kind_options = ["2 фазы", "1 фаза", "Инстант"]
+        current_kind = "Инстант" if _account_type(config) == "instant" else "1 фаза" if len(config.stages) == 1 else "2 фазы"
+        kind = st.selectbox("Тип счета", kind_options, index=kind_options.index(current_kind), key=f"settings_kind_{account.name}")
+        challenge_fee = st.number_input("Цена счета / челленджа, $", value=float(config.challenge_fee), min_value=1.0, step=10.0, key=f"settings_fee_{account.name}")
+        nominal_balance = st.number_input("Размер проп-счета, $", value=float(config.nominal_balance), min_value=1.0, step=10_000.0, key=f"settings_balance_{account.name}")
+        trailing_label = st.selectbox(
+            "Trailing расчет риска",
+            ["Адаптивная", "Консервативная", "Экономный trailing"],
+            index=_trailing_label_index(account.ui_state),
+            key=f"settings_trailing_{account.name}",
+        )
+
+        stage_settings: list[dict[str, object]] = []
+        if kind != "Инстант":
+            stage_count = 1 if kind == "1 фаза" else 2
+            for index in range(stage_count):
+                source_stage = config.stages[index] if index < len(config.stages) else build_default_account_config(kind).stages[index]
+                st.markdown(f"**Этап {index + 1}**")
+                stage_settings.append(
+                    {
+                        "name": f"phase_{index + 1}",
+                        "profit_target": st.number_input(
+                            f"Цель этапа {index + 1}, $",
+                            value=float(source_stage.profit_target),
+                            min_value=1.0,
+                            step=500.0,
+                            key=f"settings_stage_target_{account.name}_{index}",
+                        ),
+                        "max_loss": st.number_input(
+                            f"Max loss этапа {index + 1}, $",
+                            value=float(source_stage.max_loss),
+                            min_value=1.0,
+                            step=500.0,
+                            key=f"settings_stage_loss_{account.name}_{index}",
+                        ),
+                        "daily_loss": st.number_input(
+                            f"Daily loss этапа {index + 1}, $",
+                            value=float(source_stage.daily_loss or 1.0),
+                            min_value=1.0,
+                            step=500.0,
+                            key=f"settings_stage_daily_{account.name}_{index}",
+                        ),
+                        "max_risk_per_trade": st.number_input(
+                            f"Риск этапа {index + 1}, $",
+                            value=float(source_stage.max_risk_per_trade or config.prop_risk_per_trade),
+                            min_value=1.0,
+                            step=100.0,
+                            key=f"settings_stage_risk_{account.name}_{index}",
+                        ),
+                        "drawdown_mode": st.selectbox(
+                            f"Просадка этапа {index + 1}",
+                            ["static", "trailing"],
+                            index=0 if source_stage.drawdown_mode == "static" else 1,
+                            key=f"settings_stage_drawdown_{account.name}_{index}",
+                        ),
+                    }
+                )
+
+        funded_source = config.funded
+        st.markdown("**Funded / Instant**")
+        funded_target = st.number_input(
+            "Цель до выплаты, $",
+            value=float(funded_source.profit_target_for_first_payout),
+            min_value=1.0,
+            step=500.0,
+            key=f"settings_funded_target_{account.name}",
+        )
+        funded_max_loss = st.number_input("Funded max loss, $", value=float(funded_source.max_loss), min_value=1.0, step=500.0, key=f"settings_funded_loss_{account.name}")
+        funded_daily_loss = st.number_input(
+            "Funded daily loss, $",
+            value=float(funded_source.daily_loss or 1.0),
+            min_value=1.0,
+            step=500.0,
+            key=f"settings_funded_daily_{account.name}",
+        )
+        funded_risk = st.number_input(
+            "Funded / instant риск, $",
+            value=float(funded_source.max_risk_per_trade or config.prop_risk_per_trade),
+            min_value=1.0,
+            step=100.0,
+            key=f"settings_funded_risk_{account.name}",
+        )
+        funded_split_percent = st.number_input(
+            "Profit split, %",
+            value=float(funded_source.trader_split * 100),
+            min_value=1.0,
+            max_value=100.0,
+            step=5.0,
+            key=f"settings_funded_split_{account.name}",
+        )
+        funded_drawdown = st.selectbox(
+            "Funded drawdown",
+            ["static", "trailing"],
+            index=0 if funded_source.drawdown_mode == "static" else 1,
+            key=f"settings_funded_drawdown_{account.name}",
+        )
+
+        ui_state = dict(account.ui_state)
+        ui_state["trailing_risk_mode_label_v2"] = trailing_label
+        _render_rule_settings(st, ui_state, account.name, kind)
+        st.markdown("**Ликвидность личного брокера**")
+        leverage = st.number_input(
+            "Плечо",
+            value=_float_state(account.runtime_state, "hedge_margin_leverage_global", 300.0),
+            min_value=1.0,
+            step=50.0,
+            key=f"settings_margin_leverage_{account.name}",
+        )
+        stop_out = st.number_input(
+            "Stop out, %",
+            value=_float_state(account.runtime_state, "hedge_margin_stop_out_global", 50.0),
+            min_value=1.0,
+            max_value=100.0,
+            step=5.0,
+            key=f"settings_margin_stopout_{account.name}",
+        )
+        eurusd_price = st.number_input(
+            "Цена EURUSD",
+            value=_float_state(account.runtime_state, "hedge_margin_eurusd_price_global", 1.14),
+            min_value=0.1,
+            step=0.01,
+            format="%.5f",
+            key=f"settings_margin_eurusd_{account.name}",
+        )
+        spread_points = st.number_input(
+            "Спред, пункты",
+            value=_float_state(account.runtime_state, "hedge_margin_spread_points_global", 0.0),
+            min_value=0.0,
+            step=1.0,
+            key=f"settings_margin_spread_{account.name}",
+        )
+        commission = st.number_input(
+            "Комиссия / mio",
+            value=_float_state(account.runtime_state, "hedge_margin_commission_global", 10.0),
+            min_value=0.0,
+            step=1.0,
+            key=f"settings_margin_commission_{account.name}",
+        )
+        extra_liquidity = st.number_input(
+            "Неприкосновенный запас, $",
+            value=_float_state(account.runtime_state, "hedge_margin_extra_liquidity_global", 0.0),
+            min_value=0.0,
+            step=50.0,
+            key=f"settings_margin_extra_{account.name}",
+        )
+
+        if st.button("Сохранить настройки счета", use_container_width=True, key=f"settings_save_{account.name}"):
+            stages = [
+                StageConfig(
+                    name=str(item["name"]),
+                    profit_target=float(item["profit_target"]),
+                    max_loss=float(item["max_loss"]),
+                    daily_loss=float(item["daily_loss"]),
+                    max_risk_per_trade=float(item["max_risk_per_trade"]),
+                    drawdown_mode=str(item["drawdown_mode"]),
+                )
+                for item in stage_settings
+            ]
+            funded = FundedConfig(
+                profit_target_for_first_payout=float(funded_target),
+                max_loss=float(funded_max_loss),
+                daily_loss=float(funded_daily_loss),
+                max_risk_per_trade=float(funded_risk),
+                trader_split=float(funded_split_percent) / 100,
+                drawdown_mode=str(funded_drawdown),
+            )
+            prop_risk = float(funded_risk if kind == "Инстант" else stages[0].max_risk_per_trade or funded_risk)
+            updated_config = PropFirmConfig(
+                challenge_fee=float(challenge_fee),
+                nominal_balance=float(nominal_balance),
+                stages=[] if kind == "Инстант" else stages,
+                funded=funded,
+                prop_risk_per_trade=prop_risk,
+                account_type="instant" if kind == "Инстант" else "challenge",
+            )
+            updated = apply_config_to_account_state(account, updated_config, ui_state=ui_state)
+            runtime = dict(updated.runtime_state)
+            margin_settings = {
+                "hedge_margin_leverage": float(leverage),
+                "hedge_margin_stop_out": float(stop_out),
+                "hedge_margin_eurusd_price": float(eurusd_price),
+                "hedge_margin_spread_points": float(spread_points),
+                "hedge_margin_commission": float(commission),
+                "hedge_margin_extra_liquidity": float(extra_liquidity),
+            }
+            for key, value in margin_settings.items():
+                runtime[f"{key}_global"] = value
+            for stage_key in _stage_options(updated_config):
+                for key, value in margin_settings.items():
+                    runtime[f"{key}_{stage_key}"] = value
+            updated = AccountState(
+                name=updated.name,
+                config=updated.config,
+                ui_state=updated.ui_state,
+                runtime_state=runtime,
+            )
+            save_account_state(USER_ACCOUNT_STATE_PATH, updated)
+            st.session_state["cockpit_pending_selected_account"] = updated.name
+            st.session_state[f"cockpit_reset_version_{account.name}"] = int(st.session_state.get(f"cockpit_reset_version_{account.name}", 0)) + 1
+            st.rerun()
+
+
+def _render_rule_settings(st, ui_state: dict, account_name: str, kind: str) -> None:
+    st.markdown("**Правила**")
+    consistency_keys = ["instant"] if kind == "Инстант" else ["phase_1", "phase_2", "funded"]
+    if kind == "1 фаза":
+        consistency_keys = ["phase_1", "funded"]
+    for key in consistency_keys:
+        enabled_key = f"{key}_consistency_enabled"
+        percent_key = f"{key}_consistency"
+        label = "Instant consistency" if key == "instant" else "Funded consistency" if key == "funded" else f"Этап {key[-1]} consistency"
+        ui_state[enabled_key] = st.checkbox(label, value=bool(ui_state.get(enabled_key, False)), key=f"settings_{account_name}_{enabled_key}")
+        ui_state[percent_key] = st.number_input(
+            f"{label}, %",
+            value=float(ui_state.get(percent_key, 35.0 if key != "instant" else 15.0)),
+            min_value=1.0,
+            max_value=100.0,
+            step=5.0,
+            key=f"settings_{account_name}_{percent_key}",
+        )
+    ui_state["minimum_profitable_days_enabled"] = st.checkbox(
+        "Минимальные прибыльные дни",
+        value=bool(ui_state.get("minimum_profitable_days_enabled", False)),
+        key=f"settings_{account_name}_minimum_days_enabled",
+    )
+    ui_state["minimum_profitable_days_required"] = int(
+        st.number_input(
+            "Сколько дней",
+            value=int(ui_state.get("minimum_profitable_days_required", 5)),
+            min_value=1,
+            step=1,
+            key=f"settings_{account_name}_minimum_days_required",
+        )
+    )
+    ui_state["minimum_profitable_day_percent"] = st.number_input(
+        "Минимум за день, %",
+        value=float(ui_state.get("minimum_profitable_day_percent", 0.5)),
+        min_value=0.01,
+        step=0.1,
+        key=f"settings_{account_name}_minimum_day_percent",
+    )
+
+
+def _trailing_label_index(ui_state: dict) -> int:
+    labels = ["Адаптивная", "Консервативная", "Экономный trailing"]
+    current = str(ui_state.get("trailing_risk_mode_label_v2", "Адаптивная"))
+    return labels.index(current) if current in labels else 0
 
 
 def _render_accounts_dashboard(st, pd, summaries: list[CockpitSummary]) -> None:

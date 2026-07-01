@@ -7,14 +7,16 @@ from prop_research.app.trading_cockpit import (
     _minimum_days_text,
     _pnl_step_for_stage,
     apply_template_to_account_state,
+    build_default_account_config,
     build_account_summary,
+    create_account_state_from_config,
     create_account_state_from_template,
     preview_account_state,
     rename_account_state,
     reset_account_runtime,
 )
 from prop_research.config.account_states import AccountState
-from prop_research.config.templates import PropTemplate, prop_firm_to_template_config
+from prop_research.config.templates import PropTemplate, prop_firm_from_template_config, prop_firm_to_template_config
 from prop_research.domain.config import FundedConfig, PropFirmConfig, StageConfig
 
 
@@ -112,6 +114,49 @@ def test_create_account_state_from_template_rejects_duplicate_name() -> None:
 
     try:
         create_account_state_from_template(" рабочий pipfarm ", template, existing_accounts=existing)
+    except ValueError as exc:
+        assert "already exists" in str(exc)
+    else:
+        raise AssertionError("duplicate account name was accepted")
+
+
+def test_build_default_account_config_supports_one_phase_two_phase_and_instant() -> None:
+    one_phase = build_default_account_config("1 фаза")
+    two_phase = build_default_account_config("2 фазы")
+    instant = build_default_account_config("Инстант")
+
+    assert one_phase.account_type == "challenge"
+    assert len(one_phase.stages) == 1
+    assert two_phase.account_type == "challenge"
+    assert len(two_phase.stages) == 2
+    assert instant.account_type == "instant"
+    assert instant.stages == []
+    assert instant.funded.max_risk_per_trade == instant.prop_risk_per_trade
+
+
+def test_create_account_state_from_config_starts_clean_path_without_template() -> None:
+    config = build_default_account_config("Инстант")
+
+    account = create_account_state_from_config(
+        " Instant work ",
+        config,
+        ui_state={"instant_consistency_enabled": True, "instant_consistency": 30.0},
+    )
+
+    assert account.name == "Instant work"
+    assert prop_firm_from_template_config(account.config) == config
+    assert account.ui_state["instant_consistency"] == 30.0
+    assert account.runtime_state["calculator_stage_key"] == "funded"
+    assert account.runtime_state["calculator_current_prop_pnl"] == 0.0
+    assert account.runtime_state["calculator_trade_journal_funded"] == []
+
+
+def test_create_account_state_from_config_rejects_duplicate_name() -> None:
+    config = build_default_account_config("2 фазы")
+    existing = [create_account_state_from_config("Two phase", config)]
+
+    try:
+        create_account_state_from_config(" two phase ", config, existing_accounts=existing)
     except ValueError as exc:
         assert "already exists" in str(exc)
     else:
