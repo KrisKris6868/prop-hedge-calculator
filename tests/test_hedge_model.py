@@ -299,7 +299,7 @@ def test_trade_calculator_increases_personal_risk_when_prop_is_closer_to_failure
     assert near_failure["Риск личного, $"] > neutral["Риск личного, $"]
 
 
-def test_personal_balance_is_derived_from_prop_pnl_on_current_stage() -> None:
+def test_positive_prop_pnl_spends_personal_hedge_cashflow() -> None:
     result = calculate_personal_balance_from_prop_pnl(
         config=make_config(),
         stage_key="phase_1",
@@ -312,6 +312,39 @@ def test_personal_balance_is_derived_from_prop_pnl_on_current_stage() -> None:
     assert result["Старт личного счета на стадии, $"] == 200.0
     assert result["Текущий баланс личного счета, $"] == 125.0
     assert result["Изменение личного счета на стадии, $"] == -75.0
+    assert result["Фактический hedge-loss, $"] == 75.0
+
+
+def test_negative_prop_pnl_adds_personal_hedge_cashflow() -> None:
+    result = calculate_personal_balance_from_prop_pnl(
+        config=make_config(),
+        stage_key="phase_1",
+        current_prop_pnl=-3_000.0,
+        initial_personal_balance=200.0,
+        prop_risk_percent=1.5,
+        mode=CoverageMode.GROW_DEPOSIT_BY_FEE,
+    )
+
+    assert result["Текущий баланс личного счета, $"] == 275.0
+    assert result["Изменение личного счета на стадии, $"] == 75.0
+    assert result["Фактический hedge-win, $"] == 75.0
+
+
+def test_manual_hedge_cashflow_adjusts_automatic_prop_pnl_cashflow() -> None:
+    result = calculate_personal_balance_from_prop_pnl(
+        config=make_config(),
+        stage_key="phase_1",
+        current_prop_pnl=-3_000.0,
+        initial_personal_balance=200.0,
+        prop_risk_percent=1.5,
+        mode=CoverageMode.GROW_DEPOSIT_BY_FEE,
+        hedge_wins=90.0,
+        hedge_losses=25.0,
+    )
+
+    assert result["Текущий баланс личного счета, $"] == 340.0
+    assert result["Фактический hedge-win, $"] == 165.0
+    assert result["Фактический hedge-loss, $"] == 25.0
 
 
 def test_personal_balance_can_ignore_pnl_that_happened_before_hedge_started() -> None:
@@ -325,9 +358,8 @@ def test_personal_balance_can_ignore_pnl_that_happened_before_hedge_started() ->
         include_current_prop_pnl=False,
     )
 
-    values = list(result.values())
-    assert values[4] == 200.0
-    assert values[3] == 0.0
+    assert result["Текущий баланс личного счета, $"] == 200.0
+    assert result["Изменение личного счета на стадии, $"] == 0.0
 
 
 def test_personal_balance_includes_previous_stage_losses() -> None:
@@ -343,6 +375,115 @@ def test_personal_balance_includes_previous_stage_losses() -> None:
     assert result["Старт личного счета на стадии, $"] == 50.0
     assert result["Текущий баланс личного счета, $"] == 181.24
     assert result["Изменение личного счета на стадии, $"] == 131.24
+
+
+def test_conservative_trailing_mode_is_capped_by_current_failure_line_before_target() -> None:
+    config = PropFirmConfig(
+        challenge_fee=200.0,
+        nominal_balance=100_000.0,
+        stages=[],
+        funded=FundedConfig(
+            profit_target_for_first_payout=5_000.0,
+            max_loss=8_000.0,
+            trader_split=0.8,
+            max_risk_per_trade=1_000.0,
+            drawdown_mode="trailing",
+        ),
+        prop_risk_per_trade=1_000.0,
+        account_type="instant",
+    )
+
+    adaptive = calculate_personal_risk_for_trade(
+        config=config,
+        stage_key="funded",
+        current_prop_pnl=1_000.0,
+        initial_personal_balance=333.33,
+        current_personal_balance=333.33,
+        prop_risk_percent=1.0,
+        mode=CoverageMode.GROW_DEPOSIT_BY_FEE,
+        max_risk_per_trade=1_000.0,
+        trailing_high_watermark=1_000.0,
+        trailing_risk_mode=TrailingRiskMode.ADAPTIVE,
+    )
+    conservative = calculate_personal_risk_for_trade(
+        config=config,
+        stage_key="funded",
+        current_prop_pnl=1_000.0,
+        initial_personal_balance=333.33,
+        current_personal_balance=333.33,
+        prop_risk_percent=1.0,
+        mode=CoverageMode.GROW_DEPOSIT_BY_FEE,
+        max_risk_per_trade=1_000.0,
+        trailing_high_watermark=1_000.0,
+        trailing_risk_mode=TrailingRiskMode.CONSERVATIVE,
+    )
+
+    assert adaptive["Риск личного, $"] == 25.0
+    assert conservative["Риск личного, $"] == 25.0
+
+
+def test_conservative_trailing_risk_does_not_overrecover_on_current_failure_line() -> None:
+    config = PropFirmConfig(
+        challenge_fee=350.0,
+        nominal_balance=100_000.0,
+        stages=[],
+        funded=FundedConfig(
+            profit_target_for_first_payout=5_000.0,
+            max_loss=5_000.0,
+            trader_split=0.8,
+            max_risk_per_trade=900.0,
+            drawdown_mode="trailing",
+        ),
+        prop_risk_per_trade=900.0,
+        account_type="instant",
+    )
+
+    result = calculate_personal_risk_for_trade(
+        config=config,
+        stage_key="funded",
+        current_prop_pnl=2_600.0,
+        initial_personal_balance=291.67,
+        current_personal_balance=109.67,
+        prop_risk_percent=0.9,
+        mode=CoverageMode.GROW_DEPOSIT_BY_FEE,
+        max_risk_per_trade=900.0,
+        trailing_high_watermark=2_600.0,
+        trailing_risk_mode=TrailingRiskMode.CONSERVATIVE,
+    )
+
+    assert result["Риск личного, $"] == 95.76
+    assert result["Ожидаемый личный счет при потере пропа, $"] == 641.67
+
+
+def test_trailing_personal_balance_uses_high_watermark_path_and_stops_at_failure_line() -> None:
+    config = PropFirmConfig(
+        challenge_fee=350.0,
+        nominal_balance=100_000.0,
+        stages=[],
+        funded=FundedConfig(
+            profit_target_for_first_payout=5_000.0,
+            max_loss=6_000.0,
+            trader_split=0.8,
+            max_risk_per_trade=900.0,
+            drawdown_mode="trailing",
+        ),
+        prop_risk_per_trade=900.0,
+        account_type="instant",
+    )
+
+    result = calculate_personal_balance_from_prop_pnl(
+        config=config,
+        stage_key="funded",
+        current_prop_pnl=-3_600.0,
+        initial_personal_balance=1_750.0,
+        prop_risk_percent=0.9,
+        mode=CoverageMode.GROW_DEPOSIT_BY_FEE,
+        trailing_risk_mode=TrailingRiskMode.CONSERVATIVE,
+        trailing_high_watermark=2_700.0,
+    )
+
+    assert result["Фактический hedge-loss, $"] == 945.0
+    assert result["Текущий баланс личного счета, $"] == 2100.0
 
 
 def test_funded_payout_preview_uses_current_funded_profit() -> None:
@@ -409,7 +550,7 @@ def test_trade_calculator_uses_trailing_high_watermark_for_max_loss_distance() -
     assert result["distance_to_max_loss"] == 4_000.0
 
 
-def test_trade_calculator_uses_trailing_recovery_distance_before_target() -> None:
+def test_trade_calculator_caps_trailing_risk_by_current_failure_line() -> None:
     config = PropFirmConfig(
         challenge_fee=200.0,
         nominal_balance=100_000.0,
@@ -437,7 +578,7 @@ def test_trade_calculator_uses_trailing_recovery_distance_before_target() -> Non
         trailing_high_watermark=0.0,
     )
 
-    assert result["Риск личного, $"] == 66.67
+    assert result["Риск личного, $"] == 25.0
     assert result["Ожидаемый личный счет при потере пропа, $"] == 533.33
 
 

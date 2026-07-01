@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -107,6 +108,7 @@ def main() -> None:
             else CoverageMode.BALANCE_COVERS_NEXT_CHALLENGE
         )
         hedge_funded = not st.checkbox("Не хеджировать выплатной этап", value=not hedge_funded, key="skip_funded_hedge")
+        st.checkbox("Проверять маржу личного hedge", value=False, key="hedge_margin_check_enabled")
 
     with st.sidebar.expander("Новости", expanded=False):
         consider_news = st.checkbox("Учитывать новости", value=False)
@@ -217,6 +219,23 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
             disabled=not consistency_enabled,
             key="instant_consistency",
         )
+        minimum_days_enabled = st.sidebar.checkbox("Minimum profitable days", value=False, key="minimum_profitable_days_enabled")
+        st.sidebar.number_input(
+            "Minimum profitable days",
+            value=5,
+            min_value=0,
+            step=1,
+            disabled=not minimum_days_enabled,
+            key="minimum_profitable_days_required",
+        )
+        st.sidebar.number_input(
+            "Minimum day profit, % от счета",
+            value=0.5,
+            min_value=0.0,
+            step=0.1,
+            disabled=not minimum_days_enabled,
+            key="minimum_profitable_day_percent",
+        )
         instant_split_percent = st.sidebar.number_input(
             "Profit split, %",
             value=funded.trader_split * 100,
@@ -322,6 +341,16 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
                 horizontal=True,
                 key=f"phase_{index}_drawdown",
             )
+            phase_consistency_enabled = st.checkbox("Consistency rule", value=False, key=f"phase_{index}_consistency_enabled")
+            st.number_input(
+                "Consistency rule, %",
+                value=15.0,
+                min_value=0.0,
+                max_value=100.0,
+                step=1.0,
+                disabled=not phase_consistency_enabled,
+                key=f"phase_{index}_consistency",
+            )
             stages.append(
                 _make_stage_config(
                     name=f"phase_{index}",
@@ -388,6 +417,33 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
         index=0 if _field(funded, "drawdown_mode", "static") == "static" else 1,
         horizontal=True,
     )
+    funded_consistency_enabled = st.sidebar.checkbox("Funded: consistency rule", value=False, key="funded_consistency_enabled")
+    st.sidebar.number_input(
+        "Funded: consistency rule, %",
+        value=15.0,
+        min_value=0.0,
+        max_value=100.0,
+        step=1.0,
+        disabled=not funded_consistency_enabled,
+        key="funded_consistency",
+    )
+    minimum_days_enabled = st.sidebar.checkbox("Funded: minimum profitable days", value=False, key="minimum_profitable_days_enabled")
+    st.sidebar.number_input(
+        "Funded: minimum profitable days",
+        value=5,
+        min_value=0,
+        step=1,
+        disabled=not minimum_days_enabled,
+        key="minimum_profitable_days_required",
+    )
+    st.sidebar.number_input(
+        "Funded: minimum day profit, % от счета",
+        value=0.5,
+        min_value=0.0,
+        step=0.1,
+        disabled=not minimum_days_enabled,
+        key="minimum_profitable_day_percent",
+    )
     if funded_drawdown_mode == "trailing":
         st.sidebar.caption("Trailing drawdown требует state machine и будет учитываться в симуляции отдельным шагом.")
 
@@ -419,21 +475,16 @@ def _sidebar_trailing_risk_mode(st, prop_firm: PropFirmConfig) -> TrailingRiskMo
     if not _has_trailing_drawdown(prop_firm):
         return TrailingRiskMode.CONSERVATIVE
     labels = {
-        TrailingRiskMode.TARGET_LOCK: "До фиксации цели",
-        TrailingRiskMode.CURRENT_HIGH_WATERMARK: "По текущему trailing max",
-        TrailingRiskMode.CONSERVATIVE: "Консервативный",
+        TrailingRiskMode.ADAPTIVE: "Адаптивная",
+        TrailingRiskMode.CONSERVATIVE: "Консервативная",
     }
-    default_mode = (
-        TrailingRiskMode.TARGET_LOCK
-        if _account_type(prop_firm) == "instant"
-        else TrailingRiskMode.CONSERVATIVE
-    )
+    default_mode = TrailingRiskMode.ADAPTIVE
     mode_label = st.sidebar.selectbox(
         "Trailing расчет риска",
         list(labels.values()),
         index=list(labels).index(default_mode),
-        key="trailing_risk_mode_label",
-        help="До фиксации цели не резервирует будущий откат после достижения profit target. Консервативный режим резервирует и этот сценарий.",
+        key="trailing_risk_mode_label_v2",
+        help="Адаптивная модель считает от текущего high watermark. Консервативная резервирует откат после достижения цели.",
     )
     for mode, label in labels.items():
         if label == mode_label:
@@ -463,13 +514,36 @@ def _render_trade_calculator(
         coverage_mode,
         trailing_risk_mode=trailing_risk_mode,
     )
+    account_type = _account_type(prop_firm)
     top_1, top_2, top_3 = st.columns(3)
     top_1.metric("Начальный личный депозит", _money(initial_personal_balance))
     top_2.metric("Рекомендуемый личный депозит", _money(recommended_balance))
-    top_3.metric("Цена счета" if _account_type(prop_firm) == "instant" else "Цена челленджа", _money(prop_firm.challenge_fee))
+    top_3.metric("Цена счета" if account_type == "instant" else "Цена челленджа", _money(prop_firm.challenge_fee))
 
     input_1, input_2, input_3 = st.columns(3)
-    stage_key = input_1.selectbox("Текущая стадия", list(stage_options.keys()), format_func=stage_options.get)
+    stage_keys = list(stage_options.keys())
+    if st.session_state.get("calculator_stage_key") not in stage_keys:
+        st.session_state["calculator_stage_key"] = stage_keys[0]
+    stage_key = input_1.selectbox(
+        "Текущая стадия",
+        stage_keys,
+        format_func=stage_options.get,
+        key="calculator_stage_key",
+    )
+    stop_points_key = f"calculator_stop_points_{stage_key}"
+    if stop_points_key not in st.session_state:
+        st.session_state[stop_points_key] = float(st.session_state.get(f"hedge_margin_stop_points_{stage_key}", 100.0))
+    stop_points = float(
+        input_1.number_input(
+            "Стоп, пункты",
+            value=float(st.session_state[stop_points_key]),
+            min_value=1.0,
+            step=10.0,
+            key=stop_points_key,
+        )
+    )
+    previous_stage_key = st.session_state.get("calculator_previous_stage_key", stage_key)
+    model_stage_key = _model_stage_key(stage_key)
     max_risk = _stage_max_risk(prop_firm, stage_key)
     trade_risk_key = f"calculator_trade_risk_applied_{stage_key}"
     trade_risk_default_key = f"calculator_trade_risk_default_{stage_key}"
@@ -480,22 +554,81 @@ def _render_trade_calculator(
         st.session_state[trade_risk_key] = float(max_risk)
         st.session_state[trade_risk_default_key] = float(max_risk)
 
+    if "calculator_current_prop_pnl" not in st.session_state:
+        st.session_state["calculator_current_prop_pnl"] = 0.0
+    completed_spent_key = "calculator_completed_personal_spent"
+    if completed_spent_key not in st.session_state:
+        st.session_state[completed_spent_key] = 0.0
+
+    def reset_calculator_account() -> None:
+        st.session_state["calculator_current_prop_pnl"] = 0.0
+        st.session_state[completed_spent_key] = 0.0
+        st.session_state["calculator_funded_next_start_balance"] = initial_personal_balance
+        st.session_state["calculator_stage_key"] = stage_keys[0]
+        for reset_stage_key in stage_keys:
+            st.session_state[f"calculator_largest_winning_trade_{reset_stage_key}"] = 0.0
+            st.session_state[f"calculator_trailing_high_watermark_{reset_stage_key}"] = 0.0
+
+    current_prop_pnl = _pnl_after_stage_change(
+        account_type=account_type,
+        previous_stage_key=str(previous_stage_key),
+        current_stage_key=stage_key,
+        current_prop_pnl=float(st.session_state.get("calculator_current_prop_pnl", 0.0)),
+    )
+    st.session_state["calculator_current_prop_pnl"] = current_prop_pnl
+    st.session_state["calculator_previous_stage_key"] = stage_key
+    target_enabled_for_stage = not _is_funded_stage_key(stage_key) or funded_target_enabled
+    stage_profit_target = _stage_profit_target(prop_firm, stage_key)
+    current_prop_pnl = _cap_prop_pnl_to_target(
+        current_prop_pnl,
+        target_enabled=target_enabled_for_stage,
+        profit_target=stage_profit_target,
+    )
+    st.session_state["calculator_current_prop_pnl"] = current_prop_pnl
+    drawdown_mode = _stage_drawdown_mode(prop_firm, stage_key)
+    risk_strategy = "Вручную"
+    recommended_prop_risk = float(st.session_state[trade_risk_key])
+    recommended_risk_reason = ""
+    if account_type == "instant" and drawdown_mode == "trailing":
+        risk_strategy = st.selectbox(
+            "Стратегия риска пропа",
+            ["Вручную", "Экономный trailing"],
+            key="calculator_prop_risk_strategy",
+        )
+        recommended_prop_risk, recommended_risk_reason = _economic_trailing_prop_risk(
+            max_risk_per_trade=max_risk,
+            nominal_balance=prop_firm.nominal_balance,
+            current_prop_pnl=current_prop_pnl,
+            profit_target=prop_firm.funded.profit_target_for_first_payout,
+            consistency_enabled=bool(st.session_state.get("instant_consistency_enabled", False)),
+            consistency_percent=float(st.session_state.get("instant_consistency", 0.0)),
+            minimum_days_enabled=bool(st.session_state.get("minimum_profitable_days_enabled", False)),
+            minimum_day_percent=float(st.session_state.get("minimum_profitable_day_percent", 0.0)),
+            minimum_days_required=int(st.session_state.get("minimum_profitable_days_required", 0)),
+        )
+
     with input_2.form(f"calculator_trade_risk_form_{stage_key}", border=False):
         entered_trade_risk = st.number_input(
             "Риск пропа в сделке, $",
-            value=float(st.session_state[trade_risk_key]),
+            value=_trade_risk_input_value(
+                risk_strategy,
+                manual_risk=float(st.session_state[trade_risk_key]),
+                recommended_risk=recommended_prop_risk,
+            ),
             min_value=1.0,
             step=100.0,
+            disabled=risk_strategy == "Экономный trailing",
         )
         trade_risk_submitted = st.form_submit_button("Применить", use_container_width=True)
-    if trade_risk_submitted:
+    if trade_risk_submitted and risk_strategy == "Вручную":
         st.session_state[trade_risk_key] = float(entered_trade_risk)
-    current_trade_prop_risk = float(st.session_state[trade_risk_key])
-    input_2.caption(f"Сейчас применяется: {_money(current_trade_prop_risk)}")
+    manual_trade_prop_risk = float(st.session_state[trade_risk_key])
+    current_trade_prop_risk = _prop_risk_for_strategy(
+        risk_strategy,
+        manual_risk=manual_trade_prop_risk,
+        recommended_risk=recommended_prop_risk,
+    )
     stage_prop_risk_percent = _risk_percent_from_amount(current_trade_prop_risk, prop_firm.nominal_balance)
-
-    if "calculator_current_prop_pnl" not in st.session_state:
-        st.session_state["calculator_current_prop_pnl"] = 0.0
 
     current_prop_pnl_raw = input_3.number_input(
         "Текущий PnL пропа, $",
@@ -503,16 +636,30 @@ def _render_trade_calculator(
         key="calculator_current_prop_pnl",
     )
     current_prop_pnl = float(st.session_state.get("calculator_current_prop_pnl", current_prop_pnl_raw))
-    pnl_basis_label = input_3.selectbox(
-        "Как учитывать этот PnL",
-        ["PnL уже был до хеджа", "Хедж был с начала счета"],
-        key="calculator_pnl_basis",
+    input_2.caption(f"Сейчас применяется: {_money(current_trade_prop_risk)}")
+    if risk_strategy == "Экономный trailing":
+        st.info(_escape_markdown_dollars(f"Авто-риск пропа: {_money(current_trade_prop_risk)}. {recommended_risk_reason}"))
+    execution_buffer_mode = st.selectbox(
+        "Execution buffer",
+        ["off", "light_5", "normal_10", "safety_15"],
+        format_func={
+            "off": "Без buffer",
+            "light_5": "5% spread/slippage",
+            "normal_10": "10% spread/slippage",
+            "safety_15": "15% spread/slippage",
+        }.get,
+        key="calculator_execution_buffer_mode",
     )
-    include_current_prop_pnl = pnl_basis_label == "Хедж был с начала счета"
-    target_enabled_for_stage = stage_key != "funded" or funded_target_enabled
-    drawdown_mode = _stage_drawdown_mode(prop_firm, stage_key)
     trailing_high_watermark = max(0.0, current_prop_pnl)
     trailing_key = None
+    largest_trade_key = f"calculator_largest_winning_trade_{stage_key}"
+    if largest_trade_key not in st.session_state:
+        st.session_state[largest_trade_key] = 0.0
+    st.session_state[largest_trade_key] = _updated_largest_winning_trade(
+        previous_largest=float(st.session_state[largest_trade_key]),
+        current_prop_pnl=current_prop_pnl,
+        current_trade_prop_risk=current_trade_prop_risk,
+    )
     if drawdown_mode == "trailing":
         trailing_key = f"calculator_trailing_high_watermark_{stage_key}"
         if trailing_key not in st.session_state:
@@ -522,40 +669,46 @@ def _render_trade_calculator(
 
     personal_balance_state = calculate_personal_balance_from_prop_pnl(
         config=prop_firm,
-        stage_key=stage_key,
+        stage_key=model_stage_key,
         current_prop_pnl=current_prop_pnl,
         initial_personal_balance=initial_personal_balance,
         prop_risk_percent=stage_prop_risk_percent,
         mode=coverage_mode,
         trailing_risk_mode=trailing_risk_mode,
-        include_current_prop_pnl=include_current_prop_pnl,
+        trailing_high_watermark=trailing_high_watermark,
     )
     stage_starting_personal_balance = float(personal_balance_state["Старт личного счета на стадии, $"])
     current_personal_balance = float(personal_balance_state["Текущий баланс личного счета, $"])
     if stage_key == "funded" and not hedge_funded:
         current_personal_balance = stage_starting_personal_balance
-    personal_spent = _personal_spent(stage_starting_personal_balance, current_personal_balance)
-    missed_hedge_gain = 0.0
-    if not include_current_prop_pnl and current_prop_pnl < 0:
-        hedged_balance_state = calculate_personal_balance_from_prop_pnl(
-            config=prop_firm,
-            stage_key=stage_key,
-            current_prop_pnl=current_prop_pnl,
-            initial_personal_balance=initial_personal_balance,
-            prop_risk_percent=stage_prop_risk_percent,
-            mode=coverage_mode,
-            trailing_risk_mode=trailing_risk_mode,
-            include_current_prop_pnl=True,
+    if stage_key == "funded_next":
+        funded_next_start_key = "calculator_funded_next_start_balance"
+        if funded_next_start_key not in st.session_state:
+            st.session_state[funded_next_start_key] = initial_personal_balance
+        funded_next_start_balance = float(st.session_state.get(funded_next_start_key, initial_personal_balance))
+        continuation = _funded_continuation_cycle(
+            nominal_balance=prop_firm.nominal_balance,
+            max_loss=_stage_max_loss(prop_firm, "funded"),
+            profit_target=prop_firm.funded.profit_target_for_first_payout,
+            prop_risk=_stage_max_risk(prop_firm, "funded"),
+            personal_balance_after_payout=funded_next_start_balance,
+            protection_percent=1.0,
         )
-        missed_hedge_gain = max(
-            0.0,
-            float(hedged_balance_state["Текущий баланс личного счета, $"]) - current_personal_balance,
-        )
+        funded_next_ratio = float(continuation["Цель прибыли личного при сливе, $"]) / _positive_amount(_stage_max_loss(prop_firm, "funded"), 1.0)
+        current_personal_balance = round(funded_next_start_balance - current_prop_pnl * funded_next_ratio, 2)
+    current_stage_personal_spent = float(personal_balance_state["Фактический hedge-loss, $"])
+    if stage_key == "funded_next":
+        current_stage_personal_spent = max(0.0, funded_next_start_balance - current_personal_balance)
+    completed_personal_spent = float(st.session_state.get(completed_spent_key, 0.0)) if account_type == "challenge" else 0.0
+    personal_spent = _total_personal_spent(
+        completed_spent=completed_personal_spent,
+        current_stage_spent=current_stage_personal_spent,
+    )
 
     daily_loss_limit = _stage_daily_loss(prop_firm, stage_key)
     trade = calculate_personal_risk_for_trade(
         config=prop_firm,
-        stage_key=stage_key,
+        stage_key=model_stage_key,
         current_prop_pnl=current_prop_pnl,
         initial_personal_balance=initial_personal_balance,
         current_personal_balance=current_personal_balance,
@@ -569,15 +722,35 @@ def _render_trade_calculator(
         trailing_risk_mode=trailing_risk_mode,
     )
 
+    if stage_key == "funded_next":
+        continuation_trade_personal_risk = round(float(trade["Риск пропа, $"]) * funded_next_ratio, 2)
+        trade["Риск личного, $"] = continuation_trade_personal_risk
+        trade["Цель личного счета при потере пропа, $"] = round(funded_next_start_balance + float(continuation["Цель прибыли личного при сливе, $"]), 2)
+        trade["Ожидаемый личный счет при потере пропа, $"] = round(funded_next_start_balance + float(continuation["Цель прибыли личного при сливе, $"]), 2)
+        trade["personal_risk_percent_of_prop"] = round(funded_next_ratio * 100, 2)
+        trade["prop_to_personal_risk_multiple"] = round(1 / funded_next_ratio, 2) if funded_next_ratio > 0 else 0.0
+
+    base_personal_risk = float(trade["Риск личного, $"])
+    buffered_personal_risk = _personal_risk_with_execution_buffer(base_personal_risk, execution_buffer_mode)
+    target_reached = bool(target_enabled_for_stage and float(trade["distance_to_target"]) <= 0.0)
+    next_stage_key = _next_stage_key(account_type, stage_key, stage_options) if target_reached else None
+    next_stage_label = _next_stage_label(next_stage_key) if target_reached else None
     risk_1, risk_2, risk_3 = st.columns(3)
     risk_1.metric("Риск пропа", _money(float(trade["Риск пропа, $"])))
-    risk_2.metric("Риск личного", _money(float(trade["Риск личного, $"])))
-    risk_2.caption(
-        _hedge_summary_display(
-            multiplier=float(trade["prop_to_personal_risk_multiple"]),
-            personal_percent=float(trade["personal_risk_percent_of_prop"]),
+    risk_1.markdown(f"**Лот: {_lot_from_risk_and_stop_points(float(trade['Риск пропа, $']), stop_points):.2f}**")
+    if target_reached:
+        risk_2.metric("Риск личного", next_stage_label)
+        risk_2.caption("после перехода PnL сбросится на 0")
+    else:
+        risk_2.metric("Риск личного", _money(buffered_personal_risk))
+        risk_2.markdown(f"**Лот: {_lot_from_risk_and_stop_points(buffered_personal_risk, stop_points):.2f}**")
+        risk_2.caption(
+            _hedge_multiple_display(
+                float(trade["Риск пропа, $"]) / buffered_personal_risk if buffered_personal_risk > 0 else 0.0
+            )
         )
-    )
+    if not target_reached and buffered_personal_risk != base_personal_risk:
+        risk_2.caption(f"Расчетный {_money(base_personal_risk)}")
     risk_3.metric("Потрачено личных", _money(personal_spent))
 
     status_1, status_2, status_3 = st.columns(3)
@@ -586,10 +759,6 @@ def _render_trade_calculator(
     status_3.metric("Осталось до max loss", _money(float(trade["distance_to_max_loss"])))
 
     if drawdown_mode == "trailing" and trailing_key is not None:
-        def reset_trailing_account() -> None:
-            st.session_state[trailing_key] = 0.0
-            st.session_state["calculator_current_prop_pnl"] = 0.0
-
         trailing_info, trailing_reset = st.columns([4, 1])
         trailing_info.info(
             _escape_markdown_dollars(
@@ -604,22 +773,23 @@ def _render_trade_calculator(
             "Сбросить счет",
             key=f"reset_trailing_account_{stage_key}",
             use_container_width=True,
-            on_click=reset_trailing_account,
+            on_click=reset_calculator_account,
+        )
+    else:
+        _, account_reset = st.columns([4, 1])
+        account_reset.button(
+            "Сбросить счет",
+            key=f"reset_account_{account_type}_{stage_key}",
+            use_container_width=True,
+            on_click=reset_calculator_account,
         )
 
-    if missed_hedge_gain > 0:
-        st.warning(
-            _escape_markdown_dollars(
-                f"Просадка уже была до хеджа: в личный депозит нужно заложить еще {_money(missed_hedge_gain)}, "
-                "если хочешь сохранить риск как при хедже с начала счета."
-            )
-        )
-
+    consistency_enabled_key, consistency_percent_key = _consistency_state_keys(account_type, stage_key)
     consistency_status = _consistency_status_display(
-        enabled=_account_type(prop_firm) == "instant" and bool(st.session_state.get("instant_consistency_enabled", False)),
-        rule_percent=float(st.session_state.get("instant_consistency", 0.0)),
+        enabled=bool(st.session_state.get(consistency_enabled_key, False)),
+        rule_percent=float(st.session_state.get(consistency_percent_key, 0.0)),
         current_prop_pnl=current_prop_pnl,
-        largest_profit=current_trade_prop_risk,
+        largest_profit=float(st.session_state.get(largest_trade_key, 0.0)),
     )
     if consistency_status is not None:
         consistency_level, consistency_message = consistency_status
@@ -630,31 +800,91 @@ def _render_trade_calculator(
         else:
             st.info(_escape_markdown_dollars(consistency_message))
 
+    minimum_days_status = _minimum_profitable_days_status_display(
+        enabled=stage_key == "funded" and bool(st.session_state.get("minimum_profitable_days_enabled", False)),
+        required_days=int(st.session_state.get("minimum_profitable_days_required", 0)),
+        completed_days=_profitable_days_from_pnl(
+            current_prop_pnl=current_prop_pnl,
+            minimum_day_profit=prop_firm.nominal_balance * float(st.session_state.get("minimum_profitable_day_percent", 0.0)) / 100,
+            required_days=int(st.session_state.get("minimum_profitable_days_required", 0)),
+        ),
+        minimum_day_profit=prop_firm.nominal_balance * float(st.session_state.get("minimum_profitable_day_percent", 0.0)) / 100,
+    )
+    if minimum_days_status is not None:
+        minimum_days_level, minimum_days_message = minimum_days_status
+        if minimum_days_level == "success":
+            st.success(_escape_markdown_dollars(minimum_days_message))
+        else:
+            st.warning(_escape_markdown_dollars(minimum_days_message))
+
     if target_enabled_for_stage:
-        st.success(str(trade["target_status"]))
+        if target_reached and next_stage_key is not None:
+            def move_to_next_stage() -> None:
+                st.session_state[completed_spent_key] = personal_spent
+                if next_stage_key == "funded_next":
+                    payout_after_split = max(0.0, current_prop_pnl) * prop_firm.funded.trader_split
+                    st.session_state["calculator_funded_next_start_balance"] = current_personal_balance + payout_after_split
+                st.session_state["calculator_current_prop_pnl"] = 0.0
+                st.session_state["calculator_stage_key"] = next_stage_key
+                st.session_state[f"calculator_largest_winning_trade_{next_stage_key}"] = 0.0
+                st.session_state[f"calculator_trailing_high_watermark_{next_stage_key}"] = 0.0
+
+            transition_info, transition_action = st.columns([4, 1])
+            transition_info.success(f"Цель достигнута: дальше {next_stage_label}.")
+            transition_action.button(
+                "Перейти",
+                key=f"move_to_next_stage_{stage_key}_{next_stage_key}",
+                use_container_width=True,
+                on_click=move_to_next_stage,
+            )
+        elif target_reached:
+            st.success("Цель достигнута")
+        else:
+            st.success(str(trade["target_status"]))
     if consider_news:
         st.info(f"Новости учитываются как forced close, а не как штраф. Текущий сценарий закрытия: {forced_close_r:.2f}R.")
 
-    next_personal_risk = float(trade["Риск личного, $"])
-    next_prop_risk = float(trade["Риск пропа, $"])
-    deal_table = pd.DataFrame(
-        [
-            {
-                "PnL пропа": _money(current_prop_pnl),
-                "Потрачено личных": _money(personal_spent),
-                "Осталось до цели": _target_distance_display(target_enabled_for_stage, float(trade["distance_to_target"])),
-                "Осталось до max loss": _money(float(trade["distance_to_max_loss"])),
-                "Следующий риск пропа": _money(next_prop_risk),
-                "Следующий риск личного": _money(next_personal_risk),
-                "Баланс личного после Win": _money(current_personal_balance - next_personal_risk),
-                "Баланс личного после Loss": _money(current_personal_balance + next_personal_risk),
-            }
-        ]
-    )
-    st.dataframe(deal_table, use_container_width=True, hide_index=True)
+    next_personal_risk = 0.0 if target_reached else buffered_personal_risk
+    next_prop_risk = 0.0 if target_reached else float(trade["Риск пропа, $"])
 
-    if stage_key == "funded" or funded_target_enabled:
-        payout_profit = current_prop_pnl if stage_key == "funded" else prop_firm.funded.profit_target_for_first_payout
+    liquidity_preview = None
+    if bool(st.session_state.get("hedge_margin_check_enabled", False)):
+        preview_extra_liquidity = float(st.session_state.get(f"hedge_margin_extra_liquidity_{stage_key}", 0.0))
+        preview_broker_deposit = _synced_broker_deposit(
+            current_personal_balance=current_personal_balance,
+            extra_liquidity=preview_extra_liquidity,
+        )
+        liquidity_preview = _hedge_margin_liquidity(
+            personal_risk=next_personal_risk,
+            stop_points_5_digit=stop_points,
+            leverage=float(st.session_state.get(f"hedge_margin_leverage_{stage_key}", 300.0)),
+            eurusd_price=float(st.session_state.get(f"hedge_margin_eurusd_price_{stage_key}", 1.14)),
+            broker_deposit=preview_broker_deposit,
+            spread_points_5_digit=float(st.session_state.get(f"hedge_margin_spread_points_{stage_key}", 0.0)),
+            commission_per_million_per_side=float(st.session_state.get(f"hedge_margin_commission_{stage_key}", 10.0)),
+            stop_out_percent=float(st.session_state.get(f"hedge_margin_stop_out_{stage_key}", 50.0)),
+        )
+        if liquidity_preview["Докинуть под маржу, $"] > 0 or liquidity_preview["Докинуть чтобы стоп выдержал, $"] > 0:
+            st.warning(
+                "Ликвидности не хватает: это пополнение только чтобы открыть/удержать hedge до стопа, не новый риск. "
+                "[Открыть расчет ликвидности](#liquidity-personal-hedge)"
+            )
+
+    if stage_key == "funded_next":
+        cycle_result = _funded_next_cycle_result(
+            current_prop_pnl=current_prop_pnl,
+            current_personal_balance=current_personal_balance,
+            funded_next_start_balance=funded_next_start_balance,
+            trader_split=prop_firm.funded.trader_split,
+        )
+        result_1, result_2 = st.columns(2)
+        result_1.metric("Профит на funded", _money(cycle_result["Профит на funded, $"]))
+        result_2.metric("К выплате после сплита", _money(cycle_result["К выплате после сплита, $"]))
+        result_3, result_4 = st.columns(2)
+        result_3.metric("Результат hedge", _money(cycle_result["Результат hedge, $"]))
+        result_4.metric("Итог цикла", _money(cycle_result["Итог цикла, $"]))
+    elif _is_funded_stage_key(stage_key) or funded_target_enabled:
+        payout_profit = current_prop_pnl if _is_funded_stage_key(stage_key) else prop_firm.funded.profit_target_for_first_payout
         payout = calculate_funded_payout_preview(
             config=prop_firm,
             initial_personal_balance=initial_personal_balance,
@@ -665,13 +895,131 @@ def _render_trade_calculator(
             trailing_risk_mode=trailing_risk_mode,
         )
         payout_1, payout_2, payout_3 = st.columns(3)
-        payout_profit_label = "Профит на instant" if _account_type(prop_firm) == "instant" else "Профит на funded"
+        payout_profit_label = "Профит на instant" if account_type == "instant" else "Профит на funded"
         payout_1.metric(payout_profit_label, _money(payout["Профит на funded, $"]))
         payout_2.metric("К выплате после сплита", _money(payout["К выплате после сплита, $"]))
         payout_3.metric("Чистыми", _money(payout["Чистыми после личных затрат, $"]))
+        cleanest_net = float(payout["К выплате после сплита, $"]) + current_personal_balance - initial_personal_balance - prop_firm.challenge_fee
+        st.metric("Чистейшими", _money(cleanest_net))
 
         if not hedge_funded:
             st.caption("Выплатной этап не хеджируется: личный счет фиксируется, а чистыми считается payout минус затраты на счет.")
+
+        personal_balance_after_payout = current_personal_balance + float(payout["К выплате после сплита, $"])
+        continuation = _funded_continuation_cycle(
+            nominal_balance=prop_firm.nominal_balance,
+            max_loss=_stage_max_loss(prop_firm, "funded"),
+            profit_target=prop_firm.funded.profit_target_for_first_payout,
+            prop_risk=_stage_max_risk(prop_firm, "funded"),
+            personal_balance_after_payout=personal_balance_after_payout,
+            protection_percent=1.0,
+        )
+        st.subheader("Следующий funded-цикл")
+        cycle_1, cycle_2, cycle_3, cycle_4 = st.columns(4)
+        cycle_1.metric("Нужно докинуть", _money(continuation["Нужно докинуть, $"]))
+        cycle_2.metric("Депозит на цикл", _money(continuation["Депозит на следующий цикл, $"]))
+        cycle_3.metric("Риск личного", _money(continuation["Риск личного на сделку, $"]))
+        cycle_4.metric("При сливе личный", _money(continuation["Личный баланс при сливе, $"]))
+        st.caption(
+            _escape_markdown_dollars(
+                f"Цель: при потере funded-счета личный счет получает +{_money(continuation['Цель прибыли личного при сливе, $'])} "
+                f"({continuation['Защитная цель, %']:.2f}% от проп-счета)."
+            )
+        )
+
+    deal_table = pd.DataFrame(
+        [
+            {
+                "PnL пропа": _money(current_prop_pnl),
+                "Потрачено личных": _money(personal_spent),
+                "Осталось до цели": _target_distance_display(target_enabled_for_stage, float(trade["distance_to_target"])),
+                "Осталось до max loss": _money(float(trade["distance_to_max_loss"])),
+                "Следующий риск пропа": _money(next_prop_risk),
+                "Следующий риск личного": next_stage_label if target_reached else _money(next_personal_risk),
+                "Баланс личного после Win": _money(current_personal_balance - next_personal_risk),
+                "Баланс личного после Loss": _money(current_personal_balance + next_personal_risk),
+            }
+        ]
+    )
+    st.dataframe(deal_table, use_container_width=True, hide_index=True)
+
+    if bool(st.session_state.get("hedge_margin_check_enabled", False)):
+        st.markdown('<div id="liquidity-personal-hedge"></div>', unsafe_allow_html=True)
+        with st.expander("Ликвидность для личного hedge", expanded=True):
+            liquidity_input_1, liquidity_input_2 = st.columns(2)
+            extra_liquidity = liquidity_input_1.number_input(
+                "Доп. ликвидность, $",
+                value=0.0,
+                min_value=0.0,
+                step=25.0,
+                key=f"hedge_margin_extra_liquidity_{stage_key}",
+            )
+            broker_deposit = _synced_broker_deposit(
+                current_personal_balance=current_personal_balance,
+                extra_liquidity=float(extra_liquidity),
+            )
+            liquidity_input_1.caption(f"Депозит у брокера: {_money(broker_deposit)} = баланс личного + доп. ликвидность")
+            liquidity_input_2.caption(f"Стоп из калькулятора: {stop_points:.0f} пунктов")
+            leverage = liquidity_input_2.number_input(
+                "Плечо",
+                value=300.0,
+                min_value=1.0,
+                step=100.0,
+                key=f"hedge_margin_leverage_{stage_key}",
+            )
+            cost_input_1, cost_input_2, cost_input_3, cost_input_4 = st.columns(4)
+            eurusd_price = cost_input_1.number_input(
+                "EURUSD цена для маржи",
+                value=1.14,
+                min_value=0.1,
+                step=0.01,
+                format="%.5f",
+                key=f"hedge_margin_eurusd_price_{stage_key}",
+            )
+            spread_points = cost_input_2.number_input(
+                "Спред, пункты 5-знака",
+                value=0.0,
+                min_value=0.0,
+                step=1.0,
+                key=f"hedge_margin_spread_points_{stage_key}",
+            )
+            commission = cost_input_3.number_input(
+                "Комиссия $/mio/сторона",
+                value=10.0,
+                min_value=0.0,
+                step=1.0,
+                key=f"hedge_margin_commission_{stage_key}",
+            )
+            stop_out_percent = cost_input_4.number_input(
+                "Stop Out, %",
+                value=50.0,
+                min_value=0.0,
+                max_value=100.0,
+                step=10.0,
+                key=f"hedge_margin_stop_out_{stage_key}",
+            )
+            liquidity = _hedge_margin_liquidity(
+                personal_risk=next_personal_risk,
+                stop_points_5_digit=stop_points,
+                leverage=float(leverage),
+                eurusd_price=float(eurusd_price),
+                broker_deposit=float(broker_deposit),
+                spread_points_5_digit=float(spread_points),
+                commission_per_million_per_side=float(commission),
+                stop_out_percent=float(stop_out_percent),
+            )
+            liquidity_1, liquidity_2, liquidity_3, liquidity_4 = st.columns(4)
+            liquidity_1.metric("Лот hedge", f"{liquidity['Лот hedge']:.2f}")
+            liquidity_2.metric("Маржа нужна", _money(liquidity["Маржа нужна, $"]))
+            liquidity_3.metric("Критический equity", _money(liquidity["Критический equity Stop Out, $"]))
+            liquidity_4.metric("Equity после стопа", _money(liquidity["Equity после стопа, $"]))
+            stopout_1, stopout_2, stopout_3, stopout_4 = st.columns(4)
+            stopout_1.metric("Запас до Stop Out", _money(liquidity["Запас до Stop Out после стопа, $"]))
+            stopout_2.metric("Докинуть для открытия", _money(liquidity["Докинуть под маржу, $"]))
+            stopout_3.metric("Докинуть до стопа", _money(liquidity["Докинуть чтобы стоп выдержал, $"]))
+            stopout_4.metric("Комиссия+спред", _money(liquidity["Комиссия+спред, $"]))
+            if liquidity["Докинуть под маржу, $"] <= 0 and liquidity["Докинуть чтобы стоп выдержал, $"] <= 0:
+                st.success(_escape_markdown_dollars(f"Маржи хватает. Свободно после маржи: {_money(liquidity['Свободно после маржи, $'])}."))
 
     with st.expander("План по стадиям", expanded=False):
         plan_df = pd.DataFrame(
@@ -909,7 +1257,7 @@ def _render_prop_selection_principles(st) -> None:
 
 
 def _stage_max_risk(config: PropFirmConfig, stage_key: str) -> float:
-    if stage_key == "funded":
+    if _is_funded_stage_key(stage_key):
         return float(_field(config.funded, "max_risk_per_trade", None) or config.prop_risk_per_trade)
     stage = config.stages[int(stage_key.replace("phase_", "")) - 1]
     return float(_field(stage, "max_risk_per_trade", None) or config.prop_risk_per_trade)
@@ -935,11 +1283,28 @@ def _personal_spent(starting_balance: float, current_balance: float) -> float:
     return round(max(0.0, starting_balance - current_balance), 2)
 
 
+def _total_personal_spent(completed_spent: float, current_stage_spent: float) -> float:
+    return round(max(0.0, float(completed_spent)) + max(0.0, float(current_stage_spent)), 2)
+
+
 def _hedge_summary_display(multiplier: float, personal_percent: float) -> str:
     if multiplier <= 0:
         return "нет хеджа"
     compact_multiplier = f"{multiplier:.0f}x" if multiplier.is_integer() else f"{multiplier:.1f}x"
     return f"{personal_percent:.2f}% от пропа · {compact_multiplier} меньше"
+
+
+def _hedge_multiple_display(multiplier: float) -> str:
+    if multiplier <= 0:
+        return "нет хеджа"
+    return f"{multiplier:.0f}x" if float(multiplier).is_integer() else f"{multiplier:.1f}x"
+
+
+def _lot_from_risk_and_stop_points(risk_amount: float, stop_points_5_digit: float) -> float:
+    stop_points_5_digit = float(stop_points_5_digit)
+    if stop_points_5_digit <= 0:
+        return 0.0
+    return round(max(0.0, float(risk_amount)) / stop_points_5_digit, 2)
 
 
 def _default_prop_risk_percent(config: PropFirmConfig) -> float:
@@ -950,11 +1315,36 @@ def _default_prop_risk_percent(config: PropFirmConfig) -> float:
 
 def _stage_options(config: PropFirmConfig) -> dict[str, str]:
     if _account_type(config) == "instant":
-        return {"funded": "Instant счет"}
+        return {"funded": "Instant счет", "funded_next": "Funded после выплаты"}
     return {
         **{f"phase_{index + 1}": f"Этап {index + 1}: {stage.name}" for index, stage in enumerate(config.stages)},
         "funded": "Funded до первой выплаты",
+        "funded_next": "Funded после выплаты",
     }
+
+
+def _next_stage_key(account_type: str, stage_key: str, stage_options: dict[str, str]) -> str | None:
+    if account_type != "challenge":
+        return None
+    keys = list(stage_options.keys())
+    if stage_key not in keys:
+        return None
+    next_index = keys.index(stage_key) + 1
+    if next_index >= len(keys):
+        return None
+    return keys[next_index]
+
+
+def _next_stage_label(next_stage_key: str | None) -> str:
+    if next_stage_key is None:
+        return "Цель достигнута"
+    if next_stage_key == "funded":
+        return "Funded"
+    if next_stage_key == "funded_next":
+        return "Funded после выплаты"
+    if next_stage_key.startswith("phase_"):
+        return f"{next_stage_key.replace('phase_', '')}-я фаза"
+    return next_stage_key
 
 
 def _account_type(config) -> str:
@@ -978,21 +1368,35 @@ def _enabled_tab_labels() -> list[str]:
 
 
 def _stage_daily_loss(config: PropFirmConfig, stage_key: str) -> float | None:
-    if stage_key == "funded":
+    if _is_funded_stage_key(stage_key):
         return _field(config.funded, "daily_loss", None)
     return _field(config.stages[int(stage_key.replace("phase_", "")) - 1], "daily_loss", None)
 
 
 def _stage_max_loss(config: PropFirmConfig, stage_key: str) -> float:
-    if stage_key == "funded":
+    if _is_funded_stage_key(stage_key):
         return float(_field(config.funded, "max_loss", 0.0))
     return float(_field(config.stages[int(stage_key.replace("phase_", "")) - 1], "max_loss", 0.0))
 
 
 def _stage_drawdown_mode(config: PropFirmConfig, stage_key: str) -> str:
-    if stage_key == "funded":
+    if _is_funded_stage_key(stage_key):
         return str(_field(config.funded, "drawdown_mode", "static"))
     return str(_field(config.stages[int(stage_key.replace("phase_", "")) - 1], "drawdown_mode", "static"))
+
+
+def _stage_profit_target(config: PropFirmConfig, stage_key: str) -> float:
+    if _is_funded_stage_key(stage_key):
+        return float(_field(config.funded, "profit_target_for_first_payout", 0.0))
+    return float(_field(config.stages[int(stage_key.replace("phase_", "")) - 1], "profit_target", 0.0))
+
+
+def _is_funded_stage_key(stage_key: str) -> bool:
+    return stage_key in {"funded", "funded_next"}
+
+
+def _model_stage_key(stage_key: str) -> str:
+    return "funded" if _is_funded_stage_key(stage_key) else stage_key
 
 
 def _field(obj, name: str, default):
@@ -1016,10 +1420,37 @@ def _target_distance_display(enabled: bool, distance: float) -> str:
     return _money(distance)
 
 
+def _cap_prop_pnl_to_target(current_prop_pnl: float, target_enabled: bool, profit_target: float) -> float:
+    current_prop_pnl = float(current_prop_pnl)
+    profit_target = float(profit_target)
+    if not target_enabled or profit_target <= 0:
+        return current_prop_pnl
+    return min(current_prop_pnl, profit_target)
+
+
+def _pnl_after_stage_change(
+    account_type: str,
+    previous_stage_key: str,
+    current_stage_key: str,
+    current_prop_pnl: float,
+) -> float:
+    if account_type == "challenge" and previous_stage_key != current_stage_key:
+        return 0.0
+    return float(current_prop_pnl)
+
+
 def _trailing_drawdown_display(nominal_balance: float, trailing_high_watermark: float, max_loss: float) -> str:
     max_balance = nominal_balance + max(0.0, trailing_high_watermark)
     failure_balance = max_balance - max_loss
     return f"Trailing max {_money(max_balance)} · линия слива {_money(failure_balance)}"
+
+
+def _consistency_state_keys(account_type: str, stage_key: str) -> tuple[str, str]:
+    if account_type == "instant":
+        return ("instant_consistency_enabled", "instant_consistency")
+    if stage_key == "funded":
+        return ("funded_consistency_enabled", "funded_consistency")
+    return (f"{stage_key}_consistency_enabled", f"{stage_key}_consistency")
 
 
 def _consistency_status_display(
@@ -1043,6 +1474,210 @@ def _consistency_status_display(
         "warning",
         f"Consistency еще не выполнен: нужен PnL {_money(required_profit)}, осталось {_money(remaining)}.",
     )
+
+
+def _minimum_profitable_days_status_display(
+    enabled: bool,
+    required_days: int,
+    completed_days: int,
+    minimum_day_profit: float,
+) -> tuple[str, str] | None:
+    if not enabled:
+        return None
+    required_days = max(0, int(required_days))
+    completed_days = max(0, int(completed_days))
+    minimum_day_profit = max(0.0, float(minimum_day_profit))
+    if required_days <= 0:
+        return ("success", "Минимальные прибыльные дни не требуются.")
+    if completed_days >= required_days:
+        return (
+            "success",
+            f"Минимальные прибыльные дни выполнены: {completed_days}/{required_days} дней минимум по {_money(minimum_day_profit)}.",
+        )
+    remaining_days = required_days - completed_days
+    day_word = _russian_day_word(remaining_days)
+    return (
+        "warning",
+        f"Минимальные прибыльные дни: выполнено {completed_days}/{required_days}. Нужно еще {remaining_days} {day_word} минимум по {_money(minimum_day_profit)}.",
+    )
+
+
+def _profitable_days_from_pnl(current_prop_pnl: float, minimum_day_profit: float, required_days: int) -> int:
+    if current_prop_pnl <= 0 or minimum_day_profit <= 0 or required_days <= 0:
+        return 0
+    return min(int(required_days), int(current_prop_pnl // minimum_day_profit))
+
+
+def _economic_trailing_prop_risk(
+    max_risk_per_trade: float,
+    nominal_balance: float,
+    current_prop_pnl: float,
+    profit_target: float,
+    consistency_enabled: bool,
+    consistency_percent: float,
+    minimum_days_enabled: bool,
+    minimum_day_percent: float,
+    minimum_days_required: int,
+) -> tuple[float, str]:
+    max_risk = _positive_amount(float(max_risk_per_trade), 1.0)
+    consistency_cap = (
+        max(1.0, float(profit_target) * float(consistency_percent) / 100)
+        if consistency_enabled and consistency_percent > 0 and profit_target > 0
+        else max_risk
+    )
+    start_risk = round(min(max_risk, consistency_cap), 2)
+    minimum_day_profit = nominal_balance * max(0.0, float(minimum_day_percent)) / 100
+    middle_risk = round(min(max_risk, minimum_day_profit), 2) if minimum_days_enabled and minimum_day_profit > 0 else round(min(max_risk, start_risk * 2 / 3), 2)
+    middle_risk = _positive_amount(middle_risk, start_risk)
+    finish_risk = round(max(1.0, min(middle_risk / 2, max_risk)), 2)
+    completed_days = _profitable_days_from_pnl(current_prop_pnl, minimum_day_profit, minimum_days_required)
+
+    if current_prop_pnl < 0:
+        return round(max_risk, 2), "Проп в минусе: полный риск помогает личному хеджу вернуть деньги."
+    if current_prop_pnl < start_risk:
+        return start_risk, "Стартовый риск ограничен consistency, чтобы крупнейшая прибыльная сделка не раздувала нужный target."
+    if minimum_days_enabled and completed_days < minimum_days_required:
+        return middle_risk, "Добиваем минимальные прибыльные дни минимальным нужным риском."
+    return finish_risk, "Защитный режим после набора буфера: не разгоняем trailing high watermark."
+
+
+def _prop_risk_for_strategy(strategy: str, manual_risk: float, recommended_risk: float) -> float:
+    if strategy == "Экономный trailing":
+        return round(_positive_amount(float(recommended_risk), 1.0), 2)
+    return round(_positive_amount(float(manual_risk), 1.0), 2)
+
+
+def _personal_risk_with_execution_buffer(personal_risk: float, buffer_mode: str) -> float:
+    multipliers = {
+        "off": 1.0,
+        "light_5": 1.05,
+        "normal_10": 1.10,
+        "safety_15": 1.15,
+    }
+    multiplier = multipliers.get(buffer_mode, 1.0)
+    return round(max(0.0, float(personal_risk)) * multiplier, 2)
+
+
+def _funded_continuation_cycle(
+    nominal_balance: float,
+    max_loss: float,
+    profit_target: float,
+    prop_risk: float,
+    personal_balance_after_payout: float,
+    protection_percent: float,
+) -> dict[str, float]:
+    prop_risk = _positive_amount(float(prop_risk), 1.0)
+    max_loss = _positive_amount(float(max_loss), prop_risk)
+    profit_target = max(0.0, float(profit_target))
+    personal_balance_after_payout = max(0.0, float(personal_balance_after_payout))
+    protection_percent = max(0.0, float(protection_percent))
+    target_personal_profit = float(nominal_balance) * protection_percent / 100
+    loss_trades_to_failure = max_loss / prop_risk
+    win_trades_to_payout = profit_target / prop_risk if prop_risk > 0 else 0.0
+    personal_risk = target_personal_profit / loss_trades_to_failure if loss_trades_to_failure > 0 else 0.0
+    cycle_deposit = personal_risk * win_trades_to_payout
+    top_up = max(0.0, cycle_deposit - personal_balance_after_payout)
+    cycle_start_balance = personal_balance_after_payout + top_up
+    return {
+        "Защитная цель, %": round(protection_percent, 2),
+        "Цель прибыли личного при сливе, $": round(target_personal_profit, 2),
+        "Риск личного на сделку, $": round(personal_risk, 2),
+        "Депозит на следующий цикл, $": round(cycle_deposit, 2),
+        "Нужно докинуть, $": round(top_up, 2),
+        "Личный баланс после выплаты, $": round(personal_balance_after_payout, 2),
+        "Личный баланс при сливе, $": round(cycle_start_balance + target_personal_profit, 2),
+    }
+
+
+def _funded_next_cycle_result(
+    current_prop_pnl: float,
+    current_personal_balance: float,
+    funded_next_start_balance: float,
+    trader_split: float,
+) -> dict[str, float]:
+    funded_profit = max(0.0, float(current_prop_pnl))
+    payout_after_split = funded_profit * min(1.0, max(0.0, float(trader_split)))
+    hedge_result = float(current_personal_balance) - float(funded_next_start_balance)
+    return {
+        "Профит на funded, $": round(funded_profit, 2),
+        "К выплате после сплита, $": round(payout_after_split, 2),
+        "Результат hedge, $": round(hedge_result, 2),
+        "Итог цикла, $": round(payout_after_split + hedge_result, 2),
+    }
+
+
+def _hedge_margin_liquidity(
+    personal_risk: float,
+    stop_points_5_digit: float,
+    leverage: float,
+    eurusd_price: float,
+    broker_deposit: float,
+    spread_points_5_digit: float,
+    commission_per_million_per_side: float,
+    stop_out_percent: float = 50.0,
+) -> dict[str, float]:
+    personal_risk = max(0.0, float(personal_risk))
+    stop_pips = max(0.1, float(stop_points_5_digit) / 10)
+    spread_pips = max(0.0, float(spread_points_5_digit) / 10)
+    leverage = _positive_amount(float(leverage), 1.0)
+    eurusd_price = _positive_amount(float(eurusd_price), 1.0)
+    broker_deposit = max(0.0, float(broker_deposit))
+    commission_per_million_per_side = max(0.0, float(commission_per_million_per_side))
+    stop_out_percent = min(100.0, max(0.0, float(stop_out_percent)))
+    commission_round_turn_per_lot = commission_per_million_per_side * 0.2
+    stop_risk_per_lot = stop_pips * 10
+    spread_cost_per_lot = spread_pips * 10
+    total_cost_per_lot = stop_risk_per_lot + spread_cost_per_lot + commission_round_turn_per_lot
+    hedge_lot = personal_risk / total_cost_per_lot if total_cost_per_lot > 0 else 0.0
+    margin_required = hedge_lot * 100_000 * eurusd_price / leverage
+    execution_cost = hedge_lot * (spread_cost_per_lot + commission_round_turn_per_lot)
+    margin_topup = max(0.0, margin_required - broker_deposit)
+    stopout_equity = margin_required * stop_out_percent / 100
+    equity_after_stop = broker_deposit - personal_risk
+    stopout_buffer_after_stop = equity_after_stop - stopout_equity
+    stopout_topup = max(0.0, stopout_equity + personal_risk - broker_deposit)
+    free_after_margin = broker_deposit - margin_required
+    return {
+        "Лот hedge": round(hedge_lot, 2),
+        "Маржа нужна, $": round(margin_required, 2),
+        "Stop Out, %": round(stop_out_percent, 2),
+        "Критический equity Stop Out, $": round(stopout_equity, 2),
+        "Equity после стопа, $": round(equity_after_stop, 2),
+        "Запас до Stop Out после стопа, $": round(stopout_buffer_after_stop, 2),
+        "Докинуть под маржу, $": round(margin_topup, 2),
+        "Докинуть чтобы стоп выдержал, $": round(stopout_topup, 2),
+        "Свободно после маржи, $": round(free_after_margin, 2),
+        "Комиссия+спред, $": round(execution_cost, 2),
+    }
+
+
+def _synced_broker_deposit(current_personal_balance: float, extra_liquidity: float) -> float:
+    return round(max(0.0, float(current_personal_balance)) + max(0.0, float(extra_liquidity)), 2)
+
+
+def _trade_risk_input_value(strategy: str, manual_risk: float, recommended_risk: float) -> float:
+    return _prop_risk_for_strategy(strategy, manual_risk=manual_risk, recommended_risk=recommended_risk)
+
+
+def _updated_largest_winning_trade(
+    previous_largest: float,
+    current_prop_pnl: float,
+    current_trade_prop_risk: float,
+) -> float:
+    if current_prop_pnl <= 0:
+        return max(0.0, previous_largest)
+    return max(0.0, previous_largest, current_trade_prop_risk)
+
+
+def _russian_day_word(value: int) -> str:
+    value = abs(int(value))
+    if 11 <= value % 100 <= 14:
+        return "дней"
+    if value % 10 == 1:
+        return "день"
+    if 2 <= value % 10 <= 4:
+        return "дня"
+    return "дней"
 
 
 def _escape_markdown_dollars(text: str) -> str:
@@ -1135,6 +1770,8 @@ def _attach_account_type(config, account_type: str):
 
 
 def _money(value: float) -> str:
+    if not math.isfinite(float(value)):
+        return "недоступно"
     return f"${value:,.2f}"
 
 

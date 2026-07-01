@@ -12,6 +12,7 @@ class CoverageMode(str, Enum):
 
 
 class TrailingRiskMode(str, Enum):
+    ADAPTIVE = "adaptive"
     CONSERVATIVE = "conservative"
     TARGET_LOCK = "target_lock"
     CURRENT_HIGH_WATERMARK = "current_high_watermark"
@@ -303,6 +304,9 @@ def calculate_personal_balance_from_prop_pnl(
     mode: CoverageMode,
     trailing_risk_mode: TrailingRiskMode | str = TrailingRiskMode.CONSERVATIVE,
     include_current_prop_pnl: bool = True,
+    hedge_wins: float = 0.0,
+    hedge_losses: float = 0.0,
+    trailing_high_watermark: float | None = None,
 ) -> dict[str, float | str]:
     plan = build_stage_plan(
         config=config,
@@ -313,14 +317,49 @@ def calculate_personal_balance_from_prop_pnl(
     )
     row = _stage_plan_row_for_key(plan, stage_key)
     prop_risk_amount = plan.prop_risk_amount
-    pnl_in_prop_r_units = current_prop_pnl / prop_risk_amount if prop_risk_amount > 0 and include_current_prop_pnl else 0.0
-    personal_change = -pnl_in_prop_r_units * row.required_personal_risk
+    drawdown_mode = _stage_drawdown_mode(config, stage_key)
+    high_watermark = max(0.0, trailing_high_watermark or current_prop_pnl)
+    if (
+        include_current_prop_pnl
+        and prop_risk_amount > 0
+        and drawdown_mode == "trailing"
+        and high_watermark > 0
+        and current_prop_pnl < high_watermark
+    ):
+        automatic_hedge_loss = high_watermark / prop_risk_amount * row.required_personal_risk
+        balance_at_high_watermark = row.starting_personal_balance - automatic_hedge_loss
+        _stage_name, max_loss, _profit_target = _calculator_stage(stage_key, config)
+        failure_pnl = high_watermark - max_loss
+        effective_current_pnl = max(current_prop_pnl, failure_pnl)
+        high_watermark_trade = calculate_personal_risk_for_trade(
+            config=config,
+            stage_key=stage_key,
+            current_prop_pnl=high_watermark,
+            initial_personal_balance=initial_personal_balance,
+            current_personal_balance=balance_at_high_watermark,
+            prop_risk_percent=prop_risk_percent,
+            mode=mode,
+            max_risk_per_trade=prop_risk_amount,
+            trailing_high_watermark=high_watermark,
+            trailing_risk_mode=trailing_risk_mode,
+        )
+        descent_units = max(0.0, high_watermark - effective_current_pnl) / prop_risk_amount
+        automatic_hedge_win = descent_units * float(high_watermark_trade["Риск личного, $"])
+    else:
+        pnl_in_prop_r_units = current_prop_pnl / prop_risk_amount if prop_risk_amount > 0 and include_current_prop_pnl else 0.0
+        automatic_hedge_win = max(0.0, -pnl_in_prop_r_units * row.required_personal_risk)
+        automatic_hedge_loss = max(0.0, pnl_in_prop_r_units * row.required_personal_risk)
+    total_hedge_wins = automatic_hedge_win + max(0.0, hedge_wins)
+    total_hedge_losses = automatic_hedge_loss + max(0.0, hedge_losses)
+    personal_change = total_hedge_wins - total_hedge_losses
     current_personal_balance = row.starting_personal_balance + personal_change
     return {
         "Стадия": row.stage_name,
         "Старт личного счета на стадии, $": round(row.starting_personal_balance, 2),
         "Текущий PnL пропа, $": round(current_prop_pnl, 2),
         "Изменение личного счета на стадии, $": round(personal_change, 2),
+        "Фактический hedge-win, $": round(total_hedge_wins, 2),
+        "Фактический hedge-loss, $": round(total_hedge_losses, 2),
         "Текущий баланс личного счета, $": round(current_personal_balance, 2),
     }
 
@@ -374,6 +413,11 @@ def calculate_personal_risk_for_trade(
         target_enabled=target_enabled,
         trailing_risk_mode=trailing_risk_mode,
     )
+    actual_loss_trades_to_failure = (
+        distance_to_max_loss / effective_prop_risk_amount
+        if effective_prop_risk_amount > 0
+        else 0.0
+    )
     requirement = _required_risk_for_loss_trades(
         challenge_fee=config.challenge_fee,
         initial_personal_balance=initial_personal_balance,
@@ -385,7 +429,15 @@ def calculate_personal_risk_for_trade(
         ),
         mode=mode,
     )
-    personal_risk = 0.0 if stage_key == "funded" and not hedge_funded else requirement.required_personal_risk
+    current_line_requirement = _required_risk_for_loss_trades(
+        challenge_fee=config.challenge_fee,
+        initial_personal_balance=initial_personal_balance,
+        current_personal_balance=current_personal_balance,
+        loss_trades_to_failure=actual_loss_trades_to_failure,
+        mode=mode,
+    )
+    required_personal_risk = min(requirement.required_personal_risk, current_line_requirement.required_personal_risk)
+    personal_risk = 0.0 if stage_key == "funded" and not hedge_funded else round(required_personal_risk, 2)
     personal_risk_percent_of_prop = (
         round(personal_risk / effective_prop_risk_amount * 100, 2)
         if effective_prop_risk_amount > 0
@@ -409,10 +461,10 @@ def calculate_personal_risk_for_trade(
         "Риск пропа, %": round(prop_risk_percent, 2),
         "Риск пропа, $": round(effective_prop_risk_amount, 2),
         "Риск личного, $": personal_risk,
-        "Loss до потери пропа": requirement.loss_trades_to_failure,
+        "Loss до потери пропа": round(actual_loss_trades_to_failure, 2),
         "Цель личного счета при потере пропа, $": requirement.target_personal_balance_at_failure,
         "Ожидаемый личный счет при потере пропа, $": round(
-            current_personal_balance + requirement.personal_profit_if_failure,
+            current_personal_balance + personal_risk * actual_loss_trades_to_failure,
             2,
         ),
         "full_prop_risk_amount": round(full_prop_risk_amount, 2),
@@ -541,9 +593,14 @@ def _required_personal_risk(shortfall: float, recovery_trades_to_failure: float)
 
 def _normalize_trailing_risk_mode(trailing_risk_mode: TrailingRiskMode | str) -> TrailingRiskMode:
     if isinstance(trailing_risk_mode, TrailingRiskMode):
+        if trailing_risk_mode == TrailingRiskMode.CURRENT_HIGH_WATERMARK:
+            return TrailingRiskMode.ADAPTIVE
         return trailing_risk_mode
     try:
-        return TrailingRiskMode(str(trailing_risk_mode))
+        mode = TrailingRiskMode(str(trailing_risk_mode))
+        if mode == TrailingRiskMode.CURRENT_HIGH_WATERMARK:
+            return TrailingRiskMode.ADAPTIVE
+        return mode
     except ValueError:
         return TrailingRiskMode.CONSERVATIVE
 
