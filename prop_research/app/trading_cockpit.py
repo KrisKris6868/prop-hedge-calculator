@@ -175,10 +175,13 @@ def build_account_summary(account: AccountState) -> CockpitSummary:
 def preview_account_state(account: AccountState, *, stage_key: str, pnl: float, stop_points: float, risk: float) -> AccountState:
     config = prop_firm_from_template_config(account.config)
     runtime = dict(account.runtime_state)
+    previous_pnl = _float_state(runtime, "calculator_current_prop_pnl", 0.0)
+    next_pnl = round(_cap_pnl_to_stage_target(config, stage_key, pnl), 2)
     runtime["calculator_stage_key"] = stage_key
-    runtime["calculator_current_prop_pnl"] = round(_cap_pnl_to_stage_target(config, stage_key, pnl), 2)
+    runtime["calculator_current_prop_pnl"] = next_pnl
     runtime[f"calculator_stop_points_{stage_key}"] = round(float(stop_points), 2)
     runtime[f"calculator_trade_risk_applied_{stage_key}"] = round(float(risk), 2)
+    _record_pnl_trade(runtime, stage_key=stage_key, previous_pnl=previous_pnl, next_pnl=next_pnl)
     return AccountState(
         name=account.name,
         config=account.config,
@@ -203,6 +206,7 @@ def reset_account_runtime(account: AccountState) -> AccountState:
     for stage_key in _stage_options(config):
         runtime[f"calculator_largest_winning_trade_{stage_key}"] = 0.0
         runtime[f"calculator_trailing_high_watermark_{stage_key}"] = 0.0
+        runtime[f"calculator_trade_journal_{stage_key}"] = []
     return AccountState(
         name=account.name,
         config=account.config,
@@ -301,9 +305,10 @@ def _render_account_workbench(st, account: AccountState) -> AccountState:
     _metric_card(details_2, "Осталось до max loss", _money(summary.distance_to_max_loss), "")
     _signal_card(details_3, "Ликвидность", margin_label, "ok" if summary.margin_topup <= 0 else "danger")
 
-    signal_1, signal_2 = st.columns(2)
+    signal_1, signal_2, signal_3 = st.columns(3)
     _signal_card(signal_1, "Consistency", summary.consistency_text, _consistency_state(summary.consistency_text))
     _signal_card(signal_2, "Минимальные дни", summary.minimum_days_text, _minimum_days_state(summary.minimum_days_text))
+    _metric_card(signal_3, "Потрачено личных", _money(summary.personal_spent), "по текущему пути")
 
     if stage_key in {"funded", "funded_next"}:
         payout_1, payout_2, payout_3, payout_4 = st.columns(4)
@@ -320,6 +325,27 @@ def _save_reset_account(account: AccountState) -> None:
 
 def _save_account(account: AccountState) -> None:
     save_account_state(USER_ACCOUNT_STATE_PATH, account)
+
+
+def _record_pnl_trade(runtime: dict, *, stage_key: str, previous_pnl: float, next_pnl: float) -> None:
+    pnl_delta = round(float(next_pnl) - float(previous_pnl), 2)
+    if pnl_delta == 0:
+        return
+    journal_key = f"calculator_trade_journal_{stage_key}"
+    journal = runtime.get(journal_key, [])
+    if not isinstance(journal, list):
+        journal = []
+    journal.append(
+        {
+            "pnl_before": round(float(previous_pnl), 2),
+            "pnl_after": round(float(next_pnl), 2),
+            "pnl_delta": pnl_delta,
+        }
+    )
+    runtime[journal_key] = journal[-200:]
+    if pnl_delta > 0:
+        largest_key = f"calculator_largest_winning_trade_{stage_key}"
+        runtime[largest_key] = max(_float_state(runtime, largest_key, 0.0), pnl_delta)
 
 
 def _selected_account(accounts: list[AccountState], selected_name: str | None) -> AccountState | None:
@@ -385,6 +411,8 @@ def _consistency_text(account: AccountState, stage_key: str, current_pnl: float)
     enabled = bool(account.ui_state.get(enabled_key, False))
     rule_percent = _float_state(account.ui_state, percent_key, 0.0)
     largest_profit = _float_state(account.runtime_state, f"calculator_largest_winning_trade_{stage_key}", 0.0)
+    if largest_profit <= 0 and current_pnl > 0:
+        largest_profit = float(current_pnl)
     if not enabled:
         return "—"
     if rule_percent <= 0 or largest_profit <= 0:

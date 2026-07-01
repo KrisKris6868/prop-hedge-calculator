@@ -101,6 +101,7 @@ def test_reset_account_runtime_keeps_settings_but_resets_path_progress() -> None
             "calculator_current_prop_pnl": 3_800.0,
             "calculator_completed_personal_spent": 100.0,
             "calculator_largest_winning_trade_phase_1": 1_900.0,
+            "calculator_trade_journal_phase_1": [{"pnl_delta": 1_900.0}],
             "calculator_trailing_high_watermark_phase_1": 3_800.0,
             "calculator_stop_points_phase_1": 140.0,
             "calculator_trade_risk_applied_phase_1": 1_900.0,
@@ -116,6 +117,7 @@ def test_reset_account_runtime_keeps_settings_but_resets_path_progress() -> None
     assert reset.runtime_state["calculator_stop_points_phase_1"] == 140.0
     assert reset.runtime_state["calculator_trade_risk_applied_phase_1"] == 1_900.0
     assert reset.runtime_state["calculator_largest_winning_trade_phase_1"] == 0.0
+    assert reset.runtime_state["calculator_trade_journal_phase_1"] == []
 
 
 def test_summary_caps_prop_risk_to_remaining_target() -> None:
@@ -159,6 +161,45 @@ def test_preview_caps_pnl_to_stage_target() -> None:
     assert summary.status == "2-я фаза"
 
 
+def test_preview_records_pnl_change_as_stage_trade_and_largest_win() -> None:
+    account = AccountState(
+        name="PipFarm 100k",
+        config=prop_firm_to_template_config(make_config()),
+        ui_state={"phase_1_consistency_enabled": True, "phase_1_consistency": 35.0},
+        runtime_state={
+            "calculator_stage_key": "phase_1",
+            "calculator_current_prop_pnl": 4_500.0,
+            "calculator_stop_points_phase_1": 150.0,
+            "calculator_trade_risk_applied_phase_1": 1_000.0,
+            "calculator_largest_winning_trade_phase_1": 0.0,
+        },
+    )
+
+    preview = preview_account_state(account, stage_key="phase_1", pnl=5_500.0, stop_points=150.0, risk=1_000.0)
+
+    assert preview.runtime_state["calculator_trade_journal_phase_1"][-1]["pnl_delta"] == 1_000.0
+    assert preview.runtime_state["calculator_largest_winning_trade_phase_1"] == 1_000.0
+    assert _consistency_text(preview, "phase_1", 5_500.0) != "Сделок не было"
+
+
+def test_preview_records_losing_pnl_change_without_increasing_largest_win() -> None:
+    account = AccountState(
+        name="PipFarm 100k",
+        config=prop_firm_to_template_config(make_config()),
+        ui_state={},
+        runtime_state={
+            "calculator_stage_key": "phase_1",
+            "calculator_current_prop_pnl": 4_500.0,
+            "calculator_largest_winning_trade_phase_1": 1_000.0,
+        },
+    )
+
+    preview = preview_account_state(account, stage_key="phase_1", pnl=3_500.0, stop_points=150.0, risk=1_000.0)
+
+    assert preview.runtime_state["calculator_trade_journal_phase_1"][-1]["pnl_delta"] == -1_000.0
+    assert preview.runtime_state["calculator_largest_winning_trade_phase_1"] == 1_000.0
+
+
 def test_pnl_step_uses_prop_risk_until_target_remainder() -> None:
     config = make_config()
 
@@ -185,6 +226,18 @@ def test_consistency_text_is_dash_when_disabled_and_plain_when_no_trades() -> No
     )
 
     assert _consistency_text(enabled, "phase_1", 0.0) == "Сделок не было"
+
+
+def test_consistency_text_falls_back_to_current_positive_pnl_for_legacy_state() -> None:
+    config = make_config()
+    account = AccountState(
+        name="PipFarm 100k",
+        config=prop_firm_to_template_config(config),
+        ui_state={"phase_1_consistency_enabled": True, "phase_1_consistency": 35.0},
+        runtime_state={"calculator_stage_key": "phase_1", "calculator_largest_winning_trade_phase_1": 0.0},
+    )
+
+    assert _consistency_text(account, "phase_1", 5_500.0) != "Сделок не было"
 
 
 def test_minimum_days_text_is_compact_fraction_or_dash() -> None:
