@@ -7,6 +7,7 @@ from prop_research.app.trading_cockpit import (
     _minimum_days_state,
     _minimum_days_text,
     _pnl_step_for_stage,
+    _trailing_line_text,
     apply_template_to_account_state,
     build_default_account_config,
     build_account_summary,
@@ -468,7 +469,7 @@ def test_minimum_days_text_is_compact_fraction_or_dash() -> None:
 
     assert _minimum_days_text(base, config, "funded", 0.0) == "—"
 
-    enabled = AccountState(
+    enabled_without_trades = AccountState(
         name=base.name,
         config=base.config,
         ui_state={
@@ -479,9 +480,78 @@ def test_minimum_days_text_is_compact_fraction_or_dash() -> None:
         runtime_state={"calculator_stage_key": "funded"},
     )
 
-    assert _minimum_days_text(enabled, config, "funded", 0.0) == "0/5"
-    assert _minimum_days_text(enabled, config, "funded", 2_500.0) == "5/5"
+    assert _minimum_days_text(enabled_without_trades, config, "funded", 0.0) == "0/5"
+    assert _minimum_days_text(enabled_without_trades, config, "funded", 2_500.0) == "0/5"
+
+    enabled_with_trades = AccountState(
+        name=base.name,
+        config=base.config,
+        ui_state=enabled_without_trades.ui_state,
+        runtime_state={
+            "calculator_stage_key": "funded",
+            "calculator_trade_journal_funded": [
+                {"pnl_delta": 2_500.0},
+                {"pnl_delta": 400.0},
+                {"pnl_delta": -800.0},
+                {"pnl_delta": 600.0},
+            ],
+        },
+    )
+
+    assert _minimum_days_text(enabled_with_trades, config, "funded", 2_700.0) == "2/5"
     assert _minimum_days_state("5/5") == "ok"
+
+
+def test_trailing_line_text_shows_high_watermark_and_loss_line() -> None:
+    config = build_default_account_config("Инстант")
+    account = AccountState(
+        name="Instant",
+        config=prop_firm_to_template_config(config),
+        ui_state={},
+        runtime_state={
+            "calculator_stage_key": "funded",
+            "calculator_current_prop_pnl": 900.0,
+            "calculator_trailing_high_watermark_funded": 900.0,
+        },
+    )
+
+    assert _trailing_line_text(account, config, "funded", 900.0) == "Trailing max $100,900.00 · линия слива $94,900.00"
+
+
+def test_preview_keeps_trailing_high_watermark_after_pnl_pullback() -> None:
+    config = build_default_account_config("Инстант")
+    account = AccountState(
+        name="Instant",
+        config=prop_firm_to_template_config(config),
+        ui_state={},
+        runtime_state={
+            "calculator_stage_key": "funded",
+            "calculator_current_prop_pnl": 1_500.0,
+            "calculator_trailing_high_watermark_funded": 1_500.0,
+        },
+    )
+
+    preview = preview_account_state(account, stage_key="funded", pnl=1_000.0, stop_points=100.0, risk=500.0)
+
+    assert preview.runtime_state["calculator_trailing_high_watermark_funded"] == 1_500.0
+    assert _trailing_line_text(preview, config, "funded", 1_000.0) == "Trailing max $101,500.00 · линия слива $95,500.00"
+
+
+def test_preview_records_new_trailing_high_watermark() -> None:
+    config = build_default_account_config("Инстант")
+    account = AccountState(
+        name="Instant",
+        config=prop_firm_to_template_config(config),
+        ui_state={},
+        runtime_state={
+            "calculator_stage_key": "funded",
+            "calculator_current_prop_pnl": 0.0,
+        },
+    )
+
+    preview = preview_account_state(account, stage_key="funded", pnl=1_500.0, stop_points=100.0, risk=500.0)
+
+    assert preview.runtime_state["calculator_trailing_high_watermark_funded"] == 1_500.0
 
 
 def test_funded_payout_values_show_split_net_and_cleanest() -> None:

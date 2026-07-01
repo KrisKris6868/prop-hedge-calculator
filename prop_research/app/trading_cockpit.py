@@ -26,7 +26,6 @@ from prop_research.app.streamlit_app import (
     _next_stage_key,
     _next_stage_label,
     _personal_risk_with_execution_buffer,
-    _profitable_days_from_pnl,
     _risk_percent_from_amount,
     _stage_max_risk,
     _stage_options,
@@ -70,6 +69,7 @@ class CockpitSummary:
     funded_split_payout: float
     funded_net: float
     funded_cleanest: float
+    trailing_line_text: str | None
 
 
 def main() -> None:
@@ -182,6 +182,7 @@ def build_account_summary(account: AccountState) -> CockpitSummary:
         funded_split_payout=funded_split_payout,
         funded_net=funded_net,
         funded_cleanest=funded_cleanest,
+        trailing_line_text=_trailing_line_text(account, config, stage_key, current_pnl),
     )
 
 
@@ -194,6 +195,8 @@ def preview_account_state(account: AccountState, *, stage_key: str, pnl: float, 
     runtime["calculator_current_prop_pnl"] = next_pnl
     runtime[f"calculator_stop_points_{stage_key}"] = round(float(stop_points), 2)
     runtime[f"calculator_trade_risk_applied_{stage_key}"] = round(float(risk), 2)
+    trailing_key = f"calculator_trailing_high_watermark_{stage_key}"
+    runtime[trailing_key] = round(max(0.0, _float_state(runtime, trailing_key, 0.0), next_pnl), 2)
     _record_pnl_trade(runtime, stage_key=stage_key, previous_pnl=previous_pnl, next_pnl=next_pnl)
     return AccountState(
         name=account.name,
@@ -826,6 +829,8 @@ def _render_account_workbench(st, account: AccountState) -> AccountState:
         _metric_card_html("Потрачено личных", _money(summary.personal_spent), "по текущему пути"),
     ]
     _card_grid(st, cards)
+    if summary.trailing_line_text:
+        st.markdown(f'<div class="info-strip">{summary.trailing_line_text}</div>', unsafe_allow_html=True)
 
     if stage_key in {"funded", "funded_next"}:
         _card_grid(
@@ -1087,12 +1092,55 @@ def _minimum_days_text(account: AccountState, config: PropFirmConfig, stage_key:
     minimum_day_profit = config.nominal_balance * _float_state(account.ui_state, "minimum_profitable_day_percent", 0.0) / 100
     if not enabled or required_days <= 0 or minimum_day_profit <= 0:
         return "—"
-    completed_days = _profitable_days_from_pnl(
-        current_prop_pnl=current_pnl,
+    completed_days = _profitable_days_from_journal(
+        account.runtime_state.get(f"calculator_trade_journal_{stage_key}", []),
         minimum_day_profit=minimum_day_profit,
         required_days=required_days,
     )
     return f"{completed_days}/{required_days}"
+
+
+def _profitable_days_from_journal(journal: object, *, minimum_day_profit: float, required_days: int) -> int:
+    if required_days <= 0 or minimum_day_profit <= 0 or not isinstance(journal, list):
+        return 0
+    completed = 0
+    for item in journal:
+        if not isinstance(item, dict):
+            continue
+        try:
+            pnl_delta = float(item.get("pnl_delta", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if pnl_delta >= minimum_day_profit:
+            completed += 1
+    return min(required_days, completed)
+
+
+def _trailing_line_text(account: AccountState, config: PropFirmConfig, stage_key: str, current_pnl: float) -> str | None:
+    if _stage_drawdown_mode(config, stage_key) != "trailing":
+        return None
+    high_watermark = max(
+        0.0,
+        _float_state(account.runtime_state, f"calculator_trailing_high_watermark_{stage_key}", max(0.0, current_pnl)),
+        float(current_pnl),
+    )
+    trailing_max = float(config.nominal_balance) + high_watermark
+    loss_line = trailing_max - _stage_max_loss(config, stage_key)
+    return f"Trailing max {_money(trailing_max)} · линия слива {_money(loss_line)}"
+
+
+def _stage_drawdown_mode(config: PropFirmConfig, stage_key: str) -> str:
+    if stage_key.startswith("phase_"):
+        index = int(stage_key.replace("phase_", "")) - 1
+        return str(config.stages[index].drawdown_mode)
+    return str(config.funded.drawdown_mode)
+
+
+def _stage_max_loss(config: PropFirmConfig, stage_key: str) -> float:
+    if stage_key.startswith("phase_"):
+        index = int(stage_key.replace("phase_", "")) - 1
+        return float(config.stages[index].max_loss)
+    return float(config.funded.max_loss)
 
 
 def _funded_payout_values(
@@ -1283,6 +1331,10 @@ def _inject_cockpit_css(st) -> None:
         }
         .compact-info span { color: #7b8290; font-size: 13px; }
         .compact-info strong { color: #252a36; font-size: 16px; font-weight: 760; white-space: nowrap; }
+        .info-strip {
+            margin-top: 16px; border-radius: 8px; padding: 14px 18px; background: #e8f2ff;
+            border: 1px solid #cfe2fb; color: #0057ad; font-size: 16px; font-weight: 650;
+        }
         .signal-card {
             min-height: 130px; border-radius: 8px; padding: 18px 20px;
             border: 1px solid #e0e7f1; background: #ffffff; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
