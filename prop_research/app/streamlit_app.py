@@ -39,12 +39,74 @@ from prop_research.app.hedge_model import (
 )
 from prop_research.app.risk_curve import build_risk_curve
 from prop_research.config.loader import load_prop_firm_config
+from prop_research.config.templates import (
+    PropTemplate,
+    delete_prop_template,
+    load_prop_templates,
+    prop_firm_from_template_config,
+    prop_firm_to_template_config,
+    save_prop_template,
+)
 from prop_research.domain.config import FundedConfig, PropFirmConfig, StageConfig
 from prop_research.optimization.grid_search import GridSearchOptimizer
 from prop_research.simulation.monte_carlo import MonteCarloEngine, SimulationConfig
 from prop_research.strategies.continuous import ContinuousPersonalRiskStrategy
 from prop_research.strategies.fixed import FixedPersonalRiskStrategy
 from prop_research.strategies.zoned import ZonedPersonalRiskStrategy
+
+USER_TEMPLATE_PATH = PROJECT_ROOT / ".streamlit" / "prop_templates.json"
+ACTIVE_TEMPLATE_CONFIG_KEY = "prop_template_active_config"
+ACTIVE_TEMPLATE_NAME_KEY = "prop_template_active_name"
+NO_TEMPLATE_LABEL = "Без шаблона"
+TEMPLATE_UI_STATE_KEYS = (
+    "account_type_label",
+    "account_nominal_balance_preset",
+    "account_nominal_balance_custom",
+    "account_instant_max_loss_mode",
+    "account_instant_max_loss_value",
+    "account_instant_daily_loss_mode",
+    "account_instant_daily_loss_value",
+    "account_instant_max_risk",
+    "account_instant_drawdown",
+    "instant_consistency_enabled",
+    "instant_consistency",
+    "account_instant_split",
+    "funded_profit_target_enabled",
+    "account_instant_profit_target",
+    "minimum_profitable_days_enabled",
+    "minimum_profitable_days_required",
+    "minimum_profitable_day_percent",
+    "phase_1_target",
+    "phase_1_max_loss_mode",
+    "phase_1_max_loss_value",
+    "phase_1_daily_loss_mode",
+    "phase_1_daily_loss_value",
+    "phase_1_max_risk",
+    "phase_1_drawdown",
+    "phase_1_consistency_enabled",
+    "phase_1_consistency",
+    "phase_2_target",
+    "phase_2_max_loss_mode",
+    "phase_2_max_loss_value",
+    "phase_2_daily_loss_mode",
+    "phase_2_daily_loss_value",
+    "phase_2_max_risk",
+    "phase_2_drawdown",
+    "phase_2_consistency_enabled",
+    "phase_2_consistency",
+    "funded_profit_target",
+    "funded_max_loss_mode",
+    "funded_max_loss_value",
+    "funded_daily_loss_mode",
+    "funded_daily_loss_value",
+    "funded_max_risk",
+    "funded_split",
+    "funded_drawdown",
+    "funded_consistency_enabled",
+    "funded_consistency",
+    "skip_funded_hedge",
+    "trailing_risk_mode_label_v2",
+)
 
 
 def main() -> None:
@@ -58,13 +120,16 @@ def main() -> None:
         st.session_state.clear()
         st.rerun()
     st.sidebar.caption(f"Версия: {_app_version()}")
+    template_slot = st.sidebar.container()
 
     with st.sidebar.expander("Расширенные настройки", expanded=False):
         config_path = st.text_input("Файл правил", "configs/example_prop_firm.json")
 
     settings_summary = st.sidebar.container()
     prop_firm = load_prop_firm_config(Path(config_path))
+    prop_firm = _template_applied_config(st, prop_firm)
     prop_firm = _sidebar_rules(st, prop_firm)
+    _render_template_sidebar(st, template_slot, prop_firm)
     funded_target_enabled = bool(st.session_state.get("funded_profit_target_enabled", True))
     hedge_funded = not bool(st.session_state.get("skip_funded_hedge", False))
     trailing_risk_mode = _sidebar_trailing_risk_mode(st, prop_firm)
@@ -145,6 +210,109 @@ def main() -> None:
 
     with principles_tab:
         _render_prop_selection_principles(st)
+
+
+def _template_applied_config(st, fallback: PropFirmConfig) -> PropFirmConfig:
+    raw_config = st.session_state.get(ACTIVE_TEMPLATE_CONFIG_KEY)
+    if not raw_config:
+        return fallback
+    try:
+        return prop_firm_from_template_config(dict(raw_config))
+    except Exception:
+        st.session_state.pop(ACTIVE_TEMPLATE_CONFIG_KEY, None)
+        st.session_state.pop(ACTIVE_TEMPLATE_NAME_KEY, None)
+        st.sidebar.warning("Шаблон не прочитался, взяла настройки из файла правил.")
+        return fallback
+
+
+def _render_template_sidebar(st, container, prop_firm: PropFirmConfig) -> None:
+    templates = load_prop_templates(USER_TEMPLATE_PATH)
+    templates_by_name = {template.name: template for template in templates}
+    options = [NO_TEMPLATE_LABEL, *templates_by_name]
+    active_name = str(st.session_state.get(ACTIVE_TEMPLATE_NAME_KEY, NO_TEMPLATE_LABEL))
+    selected_index = options.index(active_name) if active_name in options else 0
+
+    with container.expander("Шаблоны настроек", expanded=True):
+        selected_name = st.selectbox(
+            "Выбрать шаблон",
+            options,
+            index=selected_index,
+            key="prop_template_selected",
+        )
+        action_1, action_2 = st.columns(2)
+        if action_1.button("Применить", use_container_width=True, key="prop_template_apply"):
+            selected_template = templates_by_name.get(selected_name)
+            _apply_template_to_session(st, selected_template)
+        if selected_name != NO_TEMPLATE_LABEL and action_2.button("Удалить", use_container_width=True, key="prop_template_delete"):
+            delete_prop_template(USER_TEMPLATE_PATH, selected_name)
+            if st.session_state.get(ACTIVE_TEMPLATE_NAME_KEY) == selected_name:
+                st.session_state.pop(ACTIVE_TEMPLATE_CONFIG_KEY, None)
+                st.session_state.pop(ACTIVE_TEMPLATE_NAME_KEY, None)
+            st.rerun()
+
+        template_name = st.text_input(
+            "Имя шаблона",
+            value=str(st.session_state.get("prop_template_save_name", "")),
+            placeholder="Например: ПипФарм 100к 2ф-35%",
+            key="prop_template_save_name",
+        )
+        if st.button("Сохранить текущие настройки", use_container_width=True, key="prop_template_save"):
+            clean_name = template_name.strip()
+            if not clean_name:
+                st.warning("Напиши имя шаблона.")
+            else:
+                save_prop_template(
+                    USER_TEMPLATE_PATH,
+                    name=clean_name,
+                    config=prop_firm,
+                    ui_state=_template_ui_state_from_session(st.session_state),
+                )
+                st.session_state[ACTIVE_TEMPLATE_NAME_KEY] = clean_name
+                st.session_state[ACTIVE_TEMPLATE_CONFIG_KEY] = prop_firm_to_template_config(prop_firm)
+                st.rerun()
+
+        if active_name != NO_TEMPLATE_LABEL:
+            st.caption(f"Сейчас применен: {active_name}")
+
+
+def _apply_template_to_session(st, template: PropTemplate | None) -> None:
+    _clear_template_setting_state(st.session_state)
+    _clear_calculator_runtime_state(st.session_state)
+    if template is None:
+        st.session_state.pop(ACTIVE_TEMPLATE_CONFIG_KEY, None)
+        st.session_state.pop(ACTIVE_TEMPLATE_NAME_KEY, None)
+    else:
+        st.session_state[ACTIVE_TEMPLATE_CONFIG_KEY] = dict(template.config)
+        st.session_state[ACTIVE_TEMPLATE_NAME_KEY] = template.name
+        for key, value in template.ui_state.items():
+            if key in TEMPLATE_UI_STATE_KEYS:
+                st.session_state[key] = value
+    st.rerun()
+
+
+def _template_ui_state_from_session(session_state) -> dict[str, object]:
+    return {
+        key: _json_safe_state_value(session_state[key])
+        for key in TEMPLATE_UI_STATE_KEYS
+        if key in session_state
+    }
+
+
+def _json_safe_state_value(value):
+    if isinstance(value, (bool, int, float, str)) or value is None:
+        return value
+    return str(value)
+
+
+def _clear_template_setting_state(session_state) -> None:
+    for key in TEMPLATE_UI_STATE_KEYS:
+        session_state.pop(key, None)
+
+
+def _clear_calculator_runtime_state(session_state) -> None:
+    for key in list(session_state):
+        if key.startswith("calculator_") or key.startswith("hedge_margin_last_working_inputs_"):
+            session_state.pop(key, None)
 
 
 def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
@@ -344,6 +512,7 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
         min_value=1.0,
         step=500.0,
         disabled=not funded_profit_target_enabled,
+        key="funded_profit_target",
     )
     funded_max_loss, funded_max_loss_mode = _amount_or_percent_input(
         st.sidebar,
@@ -366,6 +535,7 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
         value=float(_field(funded, "max_risk_per_trade", None) or prop_firm.prop_risk_per_trade),
         min_value=1.0,
         step=100.0,
+        key="funded_max_risk",
     )
     trader_split_percent = st.sidebar.number_input(
         "Profit split трейдера, %",
@@ -373,12 +543,14 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
         min_value=1.0,
         max_value=100.0,
         step=5.0,
+        key="funded_split",
     )
     funded_drawdown_mode = st.sidebar.radio(
         "Funded: drawdown",
         ["static", "trailing"],
         index=0 if _field(funded, "drawdown_mode", "static") == "static" else 1,
         horizontal=True,
+        key="funded_drawdown",
     )
     funded_consistency_enabled = st.sidebar.checkbox("Funded: consistency rule", value=False, key="funded_consistency_enabled")
     st.sidebar.number_input(

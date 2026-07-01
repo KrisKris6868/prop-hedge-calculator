@@ -34,6 +34,7 @@ from prop_research.app.streamlit_app import (
     _risk_percent_from_amount,
     _stage_risk_percent,
     _target_distance_display,
+    _template_ui_state_from_session,
     _total_personal_spent,
     _trailing_drawdown_display,
     _updated_largest_winning_trade,
@@ -256,6 +257,20 @@ def test_liquidity_inputs_use_remembered_working_state_after_target_reached() ->
 def test_synced_broker_deposit_uses_personal_balance_plus_liquidity() -> None:
     assert _synced_broker_deposit(current_personal_balance=755.55, extra_liquidity=100.0) == 855.55
     assert _synced_broker_deposit(current_personal_balance=755.55, extra_liquidity=-100.0) == 755.55
+
+
+def test_template_ui_state_keeps_only_sidebar_setting_keys() -> None:
+    assert _template_ui_state_from_session(
+        {
+            "funded_consistency_enabled": True,
+            "funded_consistency": 35.0,
+            "calculator_current_prop_pnl": 1_000.0,
+            "unknown": "skip",
+        }
+    ) == {
+        "funded_consistency_enabled": True,
+        "funded_consistency": 35.0,
+    }
 
 
 def test_trailing_drawdown_display_shows_high_watermark_and_failure_line() -> None:
