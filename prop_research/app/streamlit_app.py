@@ -294,7 +294,7 @@ def _render_account_sidebar(st, container, prop_firm: PropFirmConfig) -> None:
                 st.warning("Напиши имя счета.")
             else:
                 _save_current_account_state(st, clean_name, prop_firm)
-                st.rerun()
+                st.success("Путь сохранен.")
 
         if active_name != NO_ACCOUNT_LABEL:
             st.caption(f"Активный счет: {active_name}. Прогресс автосохраняется.")
