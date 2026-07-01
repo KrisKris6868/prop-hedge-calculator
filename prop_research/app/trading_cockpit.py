@@ -18,15 +18,17 @@ from prop_research.app.hedge_model import (
 )
 from prop_research.app.streamlit_app import (
     _account_type,
+    _consistency_state_keys,
+    _consistency_status_display,
     _default_prop_risk_percent,
     _hedge_margin_liquidity,
     _lot_from_risk_and_stop_points,
+    _minimum_profitable_days_status_display,
+    _profitable_days_from_pnl,
     _risk_percent_from_amount,
     _stage_drawdown_mode,
-    _stage_max_loss,
     _stage_max_risk,
     _stage_options,
-    _stage_profit_target,
 )
 from prop_research.config.account_states import AccountState, load_account_states, save_account_state
 from prop_research.config.templates import prop_firm_from_template_config, prop_firm_to_template_config
@@ -51,6 +53,8 @@ class CockpitSummary:
     distance_to_max_loss: float
     margin_topup: float
     status: str
+    consistency_text: str
+    minimum_days_text: str
 
 
 def main() -> None:
@@ -140,6 +144,46 @@ def build_account_summary(account: AccountState) -> CockpitSummary:
         distance_to_max_loss=distance_to_max_loss,
         margin_topup=margin_topup,
         status=_decision_status(distance_to_target, distance_to_max_loss, margin_topup),
+        consistency_text=_consistency_text(account, stage_key, current_pnl),
+        minimum_days_text=_minimum_days_text(account, config, stage_key, current_pnl),
+    )
+
+
+def preview_account_state(account: AccountState, *, stage_key: str, pnl: float, stop_points: float, risk: float) -> AccountState:
+    runtime = dict(account.runtime_state)
+    runtime["calculator_stage_key"] = stage_key
+    runtime["calculator_current_prop_pnl"] = round(float(pnl), 2)
+    runtime[f"calculator_stop_points_{stage_key}"] = round(float(stop_points), 2)
+    runtime[f"calculator_trade_risk_applied_{stage_key}"] = round(float(risk), 2)
+    return AccountState(
+        name=account.name,
+        config=account.config,
+        ui_state=account.ui_state,
+        runtime_state=runtime,
+    )
+
+
+def reset_account_runtime(account: AccountState) -> AccountState:
+    config = prop_firm_from_template_config(account.config)
+    first_stage_key = next(iter(_stage_options(config)))
+    runtime = {
+        key: value
+        for key, value in account.runtime_state.items()
+        if key.startswith("calculator_stop_points_") or key.startswith("calculator_trade_risk_applied_")
+    }
+    runtime["calculator_stage_key"] = first_stage_key
+    runtime["calculator_previous_stage_key"] = first_stage_key
+    runtime["calculator_current_prop_pnl"] = 0.0
+    runtime["calculator_completed_personal_spent"] = 0.0
+    runtime["calculator_funded_next_start_balance"] = 0.0
+    for stage_key in _stage_options(config):
+        runtime[f"calculator_largest_winning_trade_{stage_key}"] = 0.0
+        runtime[f"calculator_trailing_high_watermark_{stage_key}"] = 0.0
+    return AccountState(
+        name=account.name,
+        config=account.config,
+        ui_state=account.ui_state,
+        runtime_state=runtime,
     )
 
 
@@ -154,71 +198,103 @@ def _render_sidebar(st, accounts: list[AccountState]) -> str | None:
 
 
 def _render_accounts_dashboard(st, pd, summaries: list[CockpitSummary]) -> None:
-    st.markdown('<div class="section-label">Все активные счета</div>', unsafe_allow_html=True)
-    rows = [
-        {
-            "Счет": item.name,
-            "Стадия": item.stage_label,
-            "PnL": _money(item.current_pnl),
-            "Риск пропа": _money(item.prop_risk),
-            "Prop lot": f"{item.prop_lot:.2f}",
-            "Hedge lot": f"{item.hedge_lot:.2f}",
-            "Маржа": "OK" if item.margin_topup <= 0 else f"+{_money(item.margin_topup)}",
-            "Статус": item.status,
-        }
-        for item in summaries
-    ]
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    with st.expander("Все активные счета", expanded=False):
+        rows = [
+            {
+                "Счет": item.name,
+                "Стадия": item.stage_label,
+                "PnL": _money(item.current_pnl),
+                "Риск пропа": _money(item.prop_risk),
+                "Риск личного": _money(item.personal_risk),
+                "Лоты": f"{item.prop_lot:.2f} / {item.hedge_lot:.2f}",
+                "Маржа": "OK" if item.margin_topup <= 0 else f"+{_money(item.margin_topup)}",
+                "Статус": item.status,
+            }
+            for item in summaries
+        ]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
 def _render_account_workbench(st, account: AccountState) -> None:
     config = prop_firm_from_template_config(account.config)
-    summary = build_account_summary(account)
-    st.markdown(f'<div class="section-label">Сейчас торгуем: {summary.name}</div>', unsafe_allow_html=True)
-    top_1, top_2, top_3, top_4 = st.columns(4)
-    _metric_card(top_1, "Стадия", summary.stage_label, summary.status)
-    _metric_card(top_2, "Текущий PnL", _money(summary.current_pnl), f"До цели {_money(summary.distance_to_target)}")
-    _metric_card(top_3, "Prop lot", f"{summary.prop_lot:.2f}", f"Риск {_money(summary.prop_risk)}")
-    _metric_card(top_4, "Hedge lot", f"{summary.hedge_lot:.2f}", f"Личный риск {_money(summary.personal_risk)}")
+    saved_summary = build_account_summary(account)
+    st.markdown(f'<div class="section-label">Счет: {saved_summary.name}</div>', unsafe_allow_html=True)
 
-    signal_1, signal_2, signal_3 = st.columns([1.2, 1, 1])
+    stage_options = _stage_options(config)
+    control_1, control_2, control_3, control_4 = st.columns([1.2, 1, 1, 1])
+    stage_key = control_1.selectbox(
+        "Стадия",
+        list(stage_options),
+        index=list(stage_options).index(saved_summary.stage_key),
+        format_func=stage_options.get,
+        key=f"cockpit_stage_{account.name}",
+    )
+    stop_default = _stop_points(account.runtime_state, stage_key)
+    pnl = control_2.number_input(
+        "Текущий PnL",
+        value=saved_summary.current_pnl,
+        step=max(1.0, saved_summary.prop_risk),
+        key=f"cockpit_pnl_{account.name}",
+    )
+    stop_points = control_3.number_input(
+        "Стоп, пункты",
+        value=stop_default,
+        min_value=1.0,
+        step=10.0,
+        key=f"cockpit_stop_{account.name}_{stage_key}",
+    )
+    risk_default = _float_state(account.runtime_state, f"calculator_trade_risk_applied_{stage_key}", _stage_max_risk(config, stage_key))
+    risk = control_4.number_input(
+        "Риск пропа",
+        value=risk_default,
+        min_value=1.0,
+        step=100.0,
+        key=f"cockpit_risk_{account.name}_{stage_key}",
+    )
+
+    preview = preview_account_state(account, stage_key=stage_key, pnl=pnl, stop_points=stop_points, risk=risk)
+    summary = build_account_summary(preview)
+
+    action_1, action_2 = st.columns([1, 1])
+    if action_1.button("Сохранить изменения", use_container_width=True, key=f"cockpit_save_{account.name}"):
+        _save_cockpit_update(account, config, stage_key, pnl, stop_points, risk)
+        st.success("Счет обновлен.")
+    if action_2.button("Сбросить путь", use_container_width=True, key=f"cockpit_reset_{account.name}"):
+        _save_reset_account(account)
+        st.success("Путь сброшен.")
+        st.rerun()
+
+    risk_1, risk_2, risk_3 = st.columns([1.1, 1.1, 0.9])
+    _risk_card(risk_1, "Риск пропа", _money(summary.prop_risk), f"lot {summary.prop_lot:.2f} · стоп {stop_points:.0f}п")
+    _risk_card(risk_2, "Риск личного", _money(summary.personal_risk), f"hedge lot {summary.hedge_lot:.2f}")
+    _metric_card(risk_3, "Текущий PnL", _money(summary.current_pnl), f"До цели {_money(summary.distance_to_target)}")
+
+    signal_1, signal_2 = st.columns([1.25, 1])
     signal_1.markdown(
         f"""
         <div class="decision-panel">
           <div class="decision-label">Решение перед входом</div>
-          <div class="decision-main">Prop {summary.prop_lot:.2f} lot / Hedge {summary.hedge_lot:.2f} lot</div>
-          <div class="decision-note">Стоп из счета: {_stop_points(account.runtime_state, summary.stage_key):.0f} пунктов</div>
+          <div class="decision-main">{_money(summary.prop_risk)} prop / {_money(summary.personal_risk)} hedge</div>
+          <div class="decision-note">Лотность: prop {summary.prop_lot:.2f} lot · hedge {summary.hedge_lot:.2f} lot</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-    _metric_card(signal_2, "Баланс личного", _money(summary.personal_balance), "после текущего PnL")
     margin_label = "Маржа ок" if summary.margin_topup <= 0 else f"Докинуть {_money(summary.margin_topup)}"
-    _metric_card(signal_3, "Ликвидность", margin_label, f"До max loss {_money(summary.distance_to_max_loss)}")
+    _status_panel(
+        signal_2,
+        [
+            ("Статус", summary.status),
+            ("Ликвидность", margin_label),
+            ("Consistency", summary.consistency_text),
+            ("Min days", summary.minimum_days_text),
+        ],
+    )
 
-    with st.form(f"cockpit_update_{account.name}"):
-        stage_options = _stage_options(config)
-        input_1, input_2, input_3, input_4 = st.columns(4)
-        stage_key = input_1.selectbox(
-            "Стадия",
-            list(stage_options),
-            index=list(stage_options).index(summary.stage_key),
-            format_func=stage_options.get,
-        )
-        pnl = input_2.number_input("Текущий PnL", value=summary.current_pnl, step=max(1.0, summary.prop_risk))
-        stop_points = input_3.number_input("Стоп, пункты", value=_stop_points(account.runtime_state, summary.stage_key), min_value=1.0, step=10.0)
-        risk = input_4.number_input("Риск пропа", value=summary.prop_risk, min_value=1.0, step=100.0)
-        submitted = st.form_submit_button("Обновить счет", use_container_width=True)
-    if submitted:
-        _save_cockpit_update(account, config, stage_key, pnl, stop_points, risk)
-        st.success("Счет обновлен.")
-        st.rerun()
-
-    details_1, details_2, details_3, details_4 = st.columns(4)
-    _metric_card(details_1, "Осталось до цели", _money(summary.distance_to_target), "")
+    details_1, details_2, details_3 = st.columns(3)
+    _metric_card(details_1, "Баланс личного", _money(summary.personal_balance), "после текущего PnL")
     _metric_card(details_2, "Осталось до max loss", _money(summary.distance_to_max_loss), "")
-    _metric_card(details_3, "Риск личного", _money(summary.personal_risk), f"{summary.hedge_lot:.2f} lot")
-    _metric_card(details_4, "Тип счета", "Instant" if summary.account_type == "instant" else "Challenge", summary.stage_key)
+    _metric_card(details_3, "Стадия", summary.stage_label, "Instant" if summary.account_type == "instant" else "Challenge")
 
 
 def _save_cockpit_update(account: AccountState, config: PropFirmConfig, stage_key: str, pnl: float, stop_points: float, risk: float) -> None:
@@ -239,6 +315,10 @@ def _save_cockpit_update(account: AccountState, config: PropFirmConfig, stage_ke
             runtime_state=runtime,
         ),
     )
+
+
+def _save_reset_account(account: AccountState) -> None:
+    save_account_state(USER_ACCOUNT_STATE_PATH, reset_account_runtime(account))
 
 
 def _selected_account(accounts: list[AccountState], selected_name: str | None) -> AccountState | None:
@@ -294,6 +374,40 @@ def _trailing_mode_from_ui(ui_state: dict) -> TrailingRiskMode:
     return TrailingRiskMode.ADAPTIVE
 
 
+def _consistency_text(account: AccountState, stage_key: str, current_pnl: float) -> str:
+    config = prop_firm_from_template_config(account.config)
+    account_type = _account_type(config)
+    enabled_key, percent_key = _consistency_state_keys(account_type, stage_key)
+    status = _consistency_status_display(
+        enabled=bool(account.ui_state.get(enabled_key, False)),
+        rule_percent=_float_state(account.ui_state, percent_key, 0.0),
+        current_prop_pnl=current_pnl,
+        largest_profit=_float_state(account.runtime_state, f"calculator_largest_winning_trade_{stage_key}", 0.0),
+    )
+    if status is None:
+        return "Consistency: выключен"
+    return status[1]
+
+
+def _minimum_days_text(account: AccountState, config: PropFirmConfig, stage_key: str, current_pnl: float) -> str:
+    enabled = stage_key == "funded" and bool(account.ui_state.get("minimum_profitable_days_enabled", False))
+    required_days = int(_float_state(account.ui_state, "minimum_profitable_days_required", 0.0))
+    minimum_day_profit = config.nominal_balance * _float_state(account.ui_state, "minimum_profitable_day_percent", 0.0) / 100
+    status = _minimum_profitable_days_status_display(
+        enabled=enabled,
+        required_days=required_days,
+        completed_days=_profitable_days_from_pnl(
+            current_prop_pnl=current_pnl,
+            minimum_day_profit=minimum_day_profit,
+            required_days=required_days,
+        ),
+        minimum_day_profit=minimum_day_profit,
+    )
+    if status is None:
+        return "Min days: не активны"
+    return status[1]
+
+
 def _stage_daily_loss(config: PropFirmConfig, stage_key: str) -> float | None:
     if stage_key.startswith("phase_"):
         index = int(stage_key.replace("phase_", "")) - 1
@@ -332,28 +446,62 @@ def _metric_card(container, label: str, value: str, note: str) -> None:
     )
 
 
+def _risk_card(container, label: str, value: str, note: str) -> None:
+    container.markdown(
+        f"""
+        <div class="risk-card">
+          <div class="metric-label">{label}</div>
+          <div class="risk-value">{value}</div>
+          <div class="metric-note">{note}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _status_panel(container, rows: list[tuple[str, str]]) -> None:
+    row_html = "".join(
+        f'<div class="status-row"><span>{label}</span><strong>{value}</strong></div>'
+        for label, value in rows
+    )
+    container.markdown(f'<div class="status-panel">{row_html}</div>', unsafe_allow_html=True)
+
+
 def _inject_cockpit_css(st) -> None:
     st.markdown(
         """
         <style>
-        .block-container { padding-top: 2rem; max-width: 1280px; }
-        .cockpit-title { font-size: 38px; font-weight: 750; color: #202532; letter-spacing: 0; margin-bottom: 2px; }
-        .cockpit-subtitle { color: #6b7280; font-size: 15px; margin-bottom: 22px; }
-        .section-label { font-size: 18px; font-weight: 700; color: #202532; margin: 22px 0 10px; }
+        .block-container { padding-top: 1.35rem; max-width: 1320px; }
+        .cockpit-title { font-size: 34px; font-weight: 750; color: #202532; letter-spacing: 0; margin-bottom: 0; }
+        .cockpit-subtitle { color: #6b7280; font-size: 14px; margin-bottom: 14px; }
+        .section-label { font-size: 18px; font-weight: 700; color: #202532; margin: 14px 0 8px; }
         .metric-card {
-            min-height: 118px; border: 1px solid #e6e8ee; border-radius: 8px; padding: 16px 18px;
+            min-height: 100px; border: 1px solid #e6e8ee; border-radius: 8px; padding: 14px 16px;
             background: #ffffff; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
         }
-        .metric-label { color: #69707f; font-size: 14px; margin-bottom: 8px; }
-        .metric-value { color: #252a36; font-size: 32px; line-height: 1.08; font-weight: 650; overflow-wrap: anywhere; }
-        .metric-note { color: #8a91a0; font-size: 13px; margin-top: 10px; min-height: 18px; }
+        .risk-card {
+            min-height: 118px; border: 1px solid #d7e3f3; border-radius: 8px; padding: 15px 17px;
+            background: #f8fbff; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+        }
+        .metric-label { color: #69707f; font-size: 13px; margin-bottom: 7px; }
+        .metric-value { color: #252a36; font-size: 29px; line-height: 1.08; font-weight: 650; overflow-wrap: anywhere; }
+        .risk-value { color: #172033; font-size: 40px; line-height: 1; font-weight: 780; overflow-wrap: anywhere; }
+        .metric-note { color: #8a91a0; font-size: 13px; margin-top: 9px; min-height: 16px; }
         .decision-panel {
-            min-height: 154px; border-radius: 8px; padding: 20px 22px; background: #eaf3ff;
+            min-height: 134px; border-radius: 8px; padding: 18px 20px; background: #eaf3ff;
             border: 1px solid #cfe3ff; color: #0f4f9c;
         }
         .decision-label { font-size: 14px; color: #3571b8; margin-bottom: 10px; }
-        .decision-main { font-size: 30px; line-height: 1.12; font-weight: 760; color: #074a91; }
-        .decision-note { font-size: 14px; margin-top: 14px; color: #3d73a9; }
+        .decision-main { font-size: 30px; line-height: 1.12; font-weight: 760; color: #074a91; overflow-wrap: anywhere; }
+        .decision-note { font-size: 14px; margin-top: 12px; color: #3d73a9; }
+        .status-panel {
+            min-height: 134px; border: 1px solid #e6e8ee; border-radius: 8px; padding: 10px 14px;
+            background: #ffffff; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+        }
+        .status-row { display: grid; grid-template-columns: 92px 1fr; gap: 10px; padding: 7px 0; border-bottom: 1px solid #eef0f4; }
+        .status-row:last-child { border-bottom: 0; }
+        .status-row span { color: #7b8290; font-size: 13px; }
+        .status-row strong { color: #252a36; font-size: 13px; font-weight: 650; overflow-wrap: anywhere; }
         .empty-panel {
             border: 1px solid #e6e8ee; border-radius: 8px; padding: 24px; color: #69707f; background: #fff;
         }
