@@ -19,7 +19,6 @@ from prop_research.app.hedge_model import (
 from prop_research.app.streamlit_app import (
     _account_type,
     _consistency_state_keys,
-    _consistency_status_display,
     _default_prop_risk_percent,
     _hedge_margin_liquidity,
     _lot_from_risk_and_stop_points,
@@ -294,28 +293,31 @@ def _render_account_workbench(st, account: AccountState) -> AccountState:
         st.rerun()
     spacer_col.caption("Риск пропа задает шаг PnL. Нажимай +/- у PnL, чтобы быстро прокручивать путь по счету.")
 
-    risk_1, risk_2, risk_3 = st.columns([1.05, 1.05, 0.9])
-    _risk_card(risk_1, "Риск пропа", _money(summary.prop_risk), f"{summary.prop_lot:.2f} lot · стоп {stop_points:.0f}п")
-    _risk_card(risk_2, "Риск личного hedge", _money(summary.personal_risk), f"{summary.hedge_lot:.2f} lot")
-    _metric_card(risk_3, "Текущий PnL", _money(summary.current_pnl), f"До цели {_money(summary.distance_to_target)}")
-
     margin_label = "Маржа ок" if summary.margin_topup <= 0 else f"Докинуть {_money(summary.margin_topup)}"
-    details_1, details_2, details_3 = st.columns(3)
-    _metric_card(details_1, "Баланс личного", _money(summary.personal_balance), "после текущего PnL")
-    _metric_card(details_2, "Осталось до max loss", _money(summary.distance_to_max_loss), "")
-    _signal_card(details_3, "Ликвидность", margin_label, "ok" if summary.margin_topup <= 0 else "danger")
-
-    signal_1, signal_2, signal_3 = st.columns(3)
-    _signal_card(signal_1, "Consistency", summary.consistency_text, _consistency_state(summary.consistency_text))
-    _signal_card(signal_2, "Минимальные дни", summary.minimum_days_text, _minimum_days_state(summary.minimum_days_text))
-    _metric_card(signal_3, "Потрачено личных", _money(summary.personal_spent), "по текущему пути")
+    cards = [
+        _risk_card_html("Риск пропа", _money(summary.prop_risk), f"{summary.prop_lot:.2f} lot · стоп {stop_points:.0f}п"),
+        _risk_card_html("Риск личного hedge", _money(summary.personal_risk), f"{summary.hedge_lot:.2f} lot"),
+        _metric_card_html("Текущий PnL", _money(summary.current_pnl), f"До цели {_money(summary.distance_to_target)}"),
+        _metric_card_html("Баланс личного", _money(summary.personal_balance), "после текущего PnL"),
+        _metric_card_html("Осталось до max loss", _money(summary.distance_to_max_loss), ""),
+        _signal_card_html("Ликвидность", margin_label, "ok" if summary.margin_topup <= 0 else "danger"),
+        _signal_card_html("Consistency", summary.consistency_text, _consistency_state(summary.consistency_text)),
+        _signal_card_html("Минимальные дни", summary.minimum_days_text, _minimum_days_state(summary.minimum_days_text)),
+        _metric_card_html("Потрачено личных", _money(summary.personal_spent), "по текущему пути"),
+    ]
+    _card_grid(st, cards)
 
     if stage_key in {"funded", "funded_next"}:
-        payout_1, payout_2, payout_3, payout_4 = st.columns(4)
-        _metric_card(payout_1, "Профит", _money(summary.funded_profit), "funded")
-        _metric_card(payout_2, "Profit split", _money(summary.funded_split_payout), f"{config.funded.trader_split * 100:.0f}%")
-        _metric_card(payout_3, "Чистыми", _money(summary.funded_net), "минус личные затраты")
-        _metric_card(payout_4, "Чистейшие", _money(summary.funded_cleanest), "минус цена пропа")
+        _card_grid(
+            st,
+            [
+                _metric_card_html("Профит", _money(summary.funded_profit), "funded"),
+                _metric_card_html("Profit split", _money(summary.funded_split_payout), f"{config.funded.trader_split * 100:.0f}%"),
+                _metric_card_html("Чистыми", _money(summary.funded_net), "минус личные затраты"),
+                _metric_card_html("Чистейшие", _money(summary.funded_cleanest), "минус цена пропа"),
+            ],
+            columns=4,
+        )
     return preview
 
 
@@ -417,20 +419,9 @@ def _consistency_text(account: AccountState, stage_key: str, current_pnl: float)
         return "—"
     if rule_percent <= 0 or largest_profit <= 0:
         return "Сделок не было"
-    status = _consistency_status_display(
-        enabled=True,
-        rule_percent=rule_percent,
-        current_prop_pnl=current_pnl,
-        largest_profit=largest_profit,
-    )
-    if status is None:
-        return "—"
-    message = status[1]
-    return (
-        message.replace("Consistency выполнен: ", "")
-        .replace("Consistency еще не выполнен: ", "")
-        .replace("Consistency включен, но правило или прибыльная сделка пока не заданы.", "Сделок не было")
-    )
+    required_profit = largest_profit / (rule_percent / 100)
+    marker = "✓" if current_pnl >= required_profit else "✕"
+    return f"max {_money(largest_profit)} · {rule_percent:g}% {marker}"
 
 
 def _minimum_days_text(account: AccountState, config: PropFirmConfig, stage_key: str, current_pnl: float) -> str:
@@ -467,7 +458,7 @@ def _funded_payout_values(
 def _consistency_state(value: str) -> str:
     if value == "—":
         return "neutral"
-    if value.startswith("крупнейшая сделка") or value.startswith("Выполн"):
+    if "✓" in value:
         return "ok"
     return "warn"
 
@@ -530,43 +521,53 @@ def _money(value: float) -> str:
     return f"${value:,.2f}"
 
 
-def _metric_card(container, label: str, value: str, note: str) -> None:
-    container.markdown(
-        f"""
-        <div class="metric-card">
-          <div class="metric-label">{label}</div>
-          <div class="metric-value">{value}</div>
-          <div class="metric-note">{note}</div>
-        </div>
-        """,
+def _card_grid(st, cards: list[str], columns: int = 3) -> None:
+    st.markdown(
+        f'<div class="card-grid card-grid-{columns}">{"".join(cards)}</div>',
         unsafe_allow_html=True,
     )
+
+
+def _metric_card_html(label: str, value: str, note: str) -> str:
+    return f"""
+    <div class="metric-card">
+      <div class="metric-label">{label}</div>
+      <div class="metric-value">{value}</div>
+      <div class="metric-note">{note}</div>
+    </div>
+    """
+
+
+def _risk_card_html(label: str, value: str, note: str) -> str:
+    return f"""
+    <div class="risk-card">
+      <div class="metric-label">{label}</div>
+      <div class="risk-value">{value}</div>
+      <div class="metric-note">{note}</div>
+    </div>
+    """
+
+
+def _signal_card_html(label: str, value: str, state: str = "neutral") -> str:
+    safe_state = state if state in {"ok", "danger", "warn", "neutral"} else "neutral"
+    return f"""
+    <div class="signal-card signal-{safe_state}">
+      <div class="signal-label">{label}</div>
+      <div class="signal-value">{value}</div>
+    </div>
+    """
+
+
+def _metric_card(container, label: str, value: str, note: str) -> None:
+    container.markdown(_metric_card_html(label, value, note), unsafe_allow_html=True)
 
 
 def _risk_card(container, label: str, value: str, note: str) -> None:
-    container.markdown(
-        f"""
-        <div class="risk-card">
-          <div class="metric-label">{label}</div>
-          <div class="risk-value">{value}</div>
-          <div class="metric-note">{note}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    container.markdown(_risk_card_html(label, value, note), unsafe_allow_html=True)
 
 
 def _signal_card(container, label: str, value: str, state: str = "neutral") -> None:
-    safe_state = state if state in {"ok", "danger", "warn", "neutral"} else "neutral"
-    container.markdown(
-        f"""
-        <div class="signal-card signal-{safe_state}">
-          <div class="signal-label">{label}</div>
-          <div class="signal-value">{value}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    container.markdown(_signal_card_html(label, value, state), unsafe_allow_html=True)
 
 
 def _inject_cockpit_css(st) -> None:
@@ -577,12 +578,18 @@ def _inject_cockpit_css(st) -> None:
         .cockpit-title { font-size: 34px; font-weight: 750; color: #202532; letter-spacing: 0; margin-bottom: 0; }
         .cockpit-subtitle { color: #6b7280; font-size: 14px; margin-bottom: 14px; }
         .section-label { font-size: 18px; font-weight: 700; color: #202532; margin: 14px 0 8px; }
+        .card-grid {
+            display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 18px 22px; margin-top: 18px; align-items: stretch;
+        }
+        .card-grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+        .card-grid > div { height: 100%; box-sizing: border-box; }
         .metric-card {
-            min-height: 100px; border: 1px solid #e6e8ee; border-radius: 8px; padding: 14px 16px;
+            min-height: 130px; border: 1px solid #e6e8ee; border-radius: 8px; padding: 18px 20px;
             background: #ffffff; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
         }
         .risk-card {
-            min-height: 118px; border: 1px solid #d7e3f3; border-radius: 8px; padding: 15px 17px;
+            min-height: 130px; border: 1px solid #d7e3f3; border-radius: 8px; padding: 18px 20px;
             background: #f8fbff; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
         }
         .metric-label { color: #69707f; font-size: 13px; margin-bottom: 7px; }
@@ -590,7 +597,7 @@ def _inject_cockpit_css(st) -> None:
         .risk-value { color: #172033; font-size: 40px; line-height: 1; font-weight: 780; overflow-wrap: anywhere; }
         .metric-note { color: #8a91a0; font-size: 13px; margin-top: 9px; min-height: 16px; }
         .signal-card {
-            min-height: 100px; border-radius: 8px; padding: 15px 17px;
+            min-height: 130px; border-radius: 8px; padding: 18px 20px;
             border: 1px solid #e0e7f1; background: #ffffff; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
         }
         .signal-label { color: #69707f; font-size: 13px; margin-bottom: 9px; }

@@ -180,6 +180,7 @@ def test_preview_records_pnl_change_as_stage_trade_and_largest_win() -> None:
     assert preview.runtime_state["calculator_trade_journal_phase_1"][-1]["pnl_delta"] == 1_000.0
     assert preview.runtime_state["calculator_largest_winning_trade_phase_1"] == 1_000.0
     assert _consistency_text(preview, "phase_1", 5_500.0) != "Сделок не было"
+    assert _consistency_text(preview, "phase_1", 5_500.0) == "max $1,000.00 · 35% ✓"
 
 
 def test_preview_records_losing_pnl_change_without_increasing_largest_win() -> None:
@@ -237,7 +238,7 @@ def test_consistency_text_falls_back_to_current_positive_pnl_for_legacy_state() 
         runtime_state={"calculator_stage_key": "phase_1", "calculator_largest_winning_trade_phase_1": 0.0},
     )
 
-    assert _consistency_text(account, "phase_1", 5_500.0) != "Сделок не было"
+    assert _consistency_text(account, "phase_1", 5_500.0) == "max $5,500.00 · 35% ✕"
 
 
 def test_minimum_days_text_is_compact_fraction_or_dash() -> None:
