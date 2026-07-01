@@ -5,11 +5,12 @@ from prop_research.app.trading_cockpit import (
     _minimum_days_text,
     _pnl_step_for_stage,
     build_account_summary,
+    create_account_state_from_template,
     preview_account_state,
     reset_account_runtime,
 )
 from prop_research.config.account_states import AccountState
-from prop_research.config.templates import prop_firm_to_template_config
+from prop_research.config.templates import PropTemplate, prop_firm_to_template_config
 from prop_research.domain.config import FundedConfig, PropFirmConfig, StageConfig
 
 
@@ -69,6 +70,48 @@ def test_build_account_summary_uses_saved_calculator_progress() -> None:
     assert summary.distance_to_target == 4_100.0
     assert summary.initial_personal_balance > 0
     assert summary.prop_account_size == 100_000.0
+
+
+def test_create_account_state_from_template_starts_clean_path() -> None:
+    template = PropTemplate(
+        name="PipFarm 100k 2f-35%",
+        config=prop_firm_to_template_config(make_config()),
+        ui_state={"phase_1_consistency_enabled": True, "phase_1_consistency": 35.0},
+    )
+
+    account = create_account_state_from_template("  Рабочий PipFarm  ", template)
+
+    assert account.name == "Рабочий PipFarm"
+    assert account.config == template.config
+    assert account.ui_state == template.ui_state
+    assert account.runtime_state["calculator_stage_key"] == "phase_1"
+    assert account.runtime_state["calculator_previous_stage_key"] == "phase_1"
+    assert account.runtime_state["calculator_current_prop_pnl"] == 0.0
+    assert account.runtime_state["calculator_trade_risk_applied_phase_1"] == 1_900.0
+    assert account.runtime_state["calculator_trade_journal_phase_1"] == []
+
+
+def test_create_account_state_from_template_rejects_duplicate_name() -> None:
+    template = PropTemplate(
+        name="PipFarm 100k 2f-35%",
+        config=prop_firm_to_template_config(make_config()),
+        ui_state={},
+    )
+    existing = [
+        AccountState(
+            name="Рабочий PipFarm",
+            config=template.config,
+            ui_state={},
+            runtime_state={},
+        )
+    ]
+
+    try:
+        create_account_state_from_template(" рабочий pipfarm ", template, existing_accounts=existing)
+    except ValueError as exc:
+        assert "already exists" in str(exc)
+    else:
+        raise AssertionError("duplicate account name was accepted")
 
 
 def test_preview_account_state_recalculates_lots_without_mutating_saved_account() -> None:

@@ -31,10 +31,16 @@ from prop_research.app.streamlit_app import (
     _stage_profit_target,
 )
 from prop_research.config.account_states import AccountState, load_account_states, save_account_state
-from prop_research.config.templates import prop_firm_from_template_config, prop_firm_to_template_config
+from prop_research.config.templates import (
+    PropTemplate,
+    load_prop_templates,
+    prop_firm_from_template_config,
+    prop_firm_to_template_config,
+)
 from prop_research.domain.config import PropFirmConfig
 
 USER_ACCOUNT_STATE_PATH = PROJECT_ROOT / ".streamlit" / "account_states.json"
+USER_TEMPLATE_PATH = PROJECT_ROOT / ".streamlit" / "prop_templates.json"
 
 
 @dataclass(frozen=True)
@@ -193,6 +199,44 @@ def preview_account_state(account: AccountState, *, stage_key: str, pnl: float, 
     )
 
 
+def create_account_state_from_template(
+    name: str,
+    template: PropTemplate,
+    *,
+    existing_accounts: list[AccountState] | None = None,
+) -> AccountState:
+    clean_name = name.strip()
+    if not clean_name:
+        raise ValueError("account name must not be empty")
+    existing_names = {account.name.strip().lower() for account in existing_accounts or []}
+    if clean_name.lower() in existing_names:
+        raise ValueError("account name already exists")
+
+    config = prop_firm_from_template_config(template.config)
+    stage_options = _stage_options(config)
+    first_stage_key = next(iter(stage_options))
+    runtime: dict[str, object] = {
+        "calculator_stage_key": first_stage_key,
+        "calculator_previous_stage_key": first_stage_key,
+        "calculator_current_prop_pnl": 0.0,
+        "calculator_completed_personal_spent": 0.0,
+        "calculator_funded_next_start_balance": 0.0,
+    }
+    for stage_key in stage_options:
+        runtime[f"calculator_stop_points_{stage_key}"] = 100.0
+        runtime[f"calculator_trade_risk_applied_{stage_key}"] = round(_stage_max_risk(config, stage_key), 2)
+        runtime[f"calculator_largest_winning_trade_{stage_key}"] = 0.0
+        runtime[f"calculator_trailing_high_watermark_{stage_key}"] = 0.0
+        runtime[f"calculator_trade_journal_{stage_key}"] = []
+
+    return AccountState(
+        name=clean_name,
+        config=dict(template.config),
+        ui_state=dict(template.ui_state),
+        runtime_state=runtime,
+    )
+
+
 def reset_account_runtime(account: AccountState) -> AccountState:
     config = prop_firm_from_template_config(account.config)
     first_stage_key = next(iter(_stage_options(config)))
@@ -221,11 +265,54 @@ def reset_account_runtime(account: AccountState) -> AccountState:
 def _render_sidebar(st, accounts: list[AccountState]) -> str | None:
     st.sidebar.title("Счета")
     names = [account.name for account in accounts]
-    if not names:
-        return None
-    selected = st.sidebar.selectbox("Рабочий счет", names, key="cockpit_selected_account")
+    selected = None
+    if names:
+        pending_selected = st.session_state.pop("cockpit_pending_selected_account", None)
+        if pending_selected in names:
+            st.session_state["cockpit_selected_account"] = pending_selected
+        if st.session_state.get("cockpit_selected_account") not in names:
+            st.session_state["cockpit_selected_account"] = names[0]
+        selected_index = names.index(st.session_state["cockpit_selected_account"])
+        selected = st.sidebar.selectbox(
+            "Рабочий счет",
+            names,
+            index=selected_index,
+            key="cockpit_selected_account",
+        )
+    else:
+        st.sidebar.caption("Создай первый рабочий счет из сохраненного шаблона.")
+    _render_account_creator(st, accounts)
     st.sidebar.caption("Classic v1 сохранен отдельно. Здесь только быстрый торговый экран.")
-    return str(selected)
+    return str(selected) if selected is not None else None
+
+
+def _render_account_creator(st, accounts: list[AccountState]) -> None:
+    templates = load_prop_templates(USER_TEMPLATE_PATH)
+    templates_by_name = {template.name: template for template in templates}
+    with st.sidebar.expander("Новый счет", expanded=not accounts):
+        if not templates_by_name:
+            st.caption("Сначала сохрани шаблон в classic-калькуляторе.")
+            return
+        template_name = st.selectbox("Шаблон", list(templates_by_name), key="cockpit_new_account_template")
+        account_name = st.text_input(
+            "Имя счета",
+            value=str(st.session_state.get("cockpit_new_account_name", "")),
+            placeholder=template_name,
+            key="cockpit_new_account_name",
+        )
+        if st.button("Создать счет", use_container_width=True, key="cockpit_create_account"):
+            try:
+                account = create_account_state_from_template(
+                    account_name or template_name,
+                    templates_by_name[template_name],
+                    existing_accounts=accounts,
+                )
+            except ValueError as exc:
+                st.warning("Счет с таким именем уже есть." if "already exists" in str(exc) else "Напиши имя счета.")
+                return
+            save_account_state(USER_ACCOUNT_STATE_PATH, account)
+            st.session_state["cockpit_pending_selected_account"] = account.name
+            st.rerun()
 
 
 def _render_accounts_dashboard(st, pd, summaries: list[CockpitSummary]) -> None:
