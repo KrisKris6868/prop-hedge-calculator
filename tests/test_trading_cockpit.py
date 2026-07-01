@@ -1,4 +1,9 @@
-from prop_research.app.trading_cockpit import build_account_summary, preview_account_state, reset_account_runtime
+from prop_research.app.trading_cockpit import (
+    apply_trade_outcome,
+    build_account_summary,
+    preview_account_state,
+    reset_account_runtime,
+)
 from prop_research.config.account_states import AccountState
 from prop_research.config.templates import prop_firm_to_template_config
 from prop_research.domain.config import FundedConfig, PropFirmConfig, StageConfig
@@ -107,3 +112,66 @@ def test_reset_account_runtime_keeps_settings_but_resets_path_progress() -> None
     assert reset.runtime_state["calculator_stop_points_phase_1"] == 140.0
     assert reset.runtime_state["calculator_trade_risk_applied_phase_1"] == 1_900.0
     assert reset.runtime_state["calculator_largest_winning_trade_phase_1"] == 0.0
+
+
+def test_summary_caps_prop_risk_to_remaining_target() -> None:
+    account = AccountState(
+        name="PipFarm 100k",
+        config=prop_firm_to_template_config(make_config()),
+        ui_state={},
+        runtime_state={
+            "calculator_stage_key": "phase_1",
+            "calculator_current_prop_pnl": 5_600.0,
+            "calculator_stop_points_phase_1": 150.0,
+            "calculator_trade_risk_applied_phase_1": 1_900.0,
+        },
+    )
+
+    summary = build_account_summary(account)
+
+    assert summary.prop_risk == 400.0
+    assert summary.prop_lot == 2.67
+    assert summary.distance_to_target == 400.0
+
+
+def test_take_profit_outcome_moves_challenge_to_next_stage_when_target_reached() -> None:
+    account = AccountState(
+        name="PipFarm 100k",
+        config=prop_firm_to_template_config(make_config()),
+        ui_state={},
+        runtime_state={
+            "calculator_stage_key": "phase_1",
+            "calculator_current_prop_pnl": 5_600.0,
+            "calculator_stop_points_phase_1": 150.0,
+            "calculator_trade_risk_applied_phase_1": 1_900.0,
+        },
+    )
+
+    updated = apply_trade_outcome(account, stage_key="phase_1", pnl=5_600.0, stop_points=150.0, risk=1_900.0, outcome="tp")
+
+    assert updated.runtime_state["calculator_stage_key"] == "phase_2"
+    assert updated.runtime_state["calculator_previous_stage_key"] == "phase_2"
+    assert updated.runtime_state["calculator_current_prop_pnl"] == 0.0
+    assert updated.runtime_state["calculator_stop_points_phase_1"] == 150.0
+    assert updated.runtime_state["calculator_trade_risk_applied_phase_1"] == 1_900.0
+    assert updated.runtime_state["calculator_largest_winning_trade_phase_2"] == 0.0
+
+
+def test_stop_loss_outcome_subtracts_effective_risk_from_current_pnl() -> None:
+    account = AccountState(
+        name="PipFarm 100k",
+        config=prop_firm_to_template_config(make_config()),
+        ui_state={},
+        runtime_state={
+            "calculator_stage_key": "phase_1",
+            "calculator_current_prop_pnl": 3_800.0,
+            "calculator_stop_points_phase_1": 150.0,
+            "calculator_trade_risk_applied_phase_1": 1_900.0,
+        },
+    )
+
+    updated = apply_trade_outcome(account, stage_key="phase_1", pnl=3_800.0, stop_points=150.0, risk=1_900.0, outcome="sl")
+
+    assert updated.runtime_state["calculator_stage_key"] == "phase_1"
+    assert updated.runtime_state["calculator_current_prop_pnl"] == 1_900.0
+    assert updated.runtime_state["calculator_largest_winning_trade_phase_1"] == 0.0
