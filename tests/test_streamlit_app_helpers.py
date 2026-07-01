@@ -11,6 +11,8 @@ from prop_research.app.streamlit_app import (
     _funded_continuation_cycle,
     _funded_next_cycle_result,
     _hedge_margin_liquidity,
+    _liquidity_inputs_for_margin,
+    _liquidity_personal_risk_for_margin,
     _synced_broker_deposit,
     _lot_from_risk_and_stop_points,
     _hedge_multiple_display,
@@ -190,6 +192,65 @@ def test_hedge_margin_liquidity_calculates_lot_margin_and_topup() -> None:
     assert enough["Докинуть чтобы стоп выдержал, $"] == 0.0
     assert tight["Докинуть под маржу, $"] == 340.69
     assert tight["Докинуть чтобы стоп выдержал, $"] == 232.84
+
+
+def test_liquidity_personal_risk_keeps_last_real_risk_after_target_reached() -> None:
+    assert (
+        _liquidity_personal_risk_for_margin(
+            target_reached=True,
+            buffered_personal_risk=113.75,
+            next_personal_risk=0.0,
+        )
+        == 113.75
+    )
+    assert (
+        _liquidity_personal_risk_for_margin(
+            target_reached=False,
+            buffered_personal_risk=113.75,
+            next_personal_risk=113.75,
+        )
+        == 113.75
+    )
+
+
+def test_liquidity_inputs_use_remembered_working_state_after_target_reached() -> None:
+    current_inputs = {
+        "personal_risk": float("inf"),
+        "stop_points_5_digit": 100.0,
+        "leverage": 300.0,
+        "eurusd_price": 1.14,
+        "broker_deposit": 645.31,
+        "spread_points_5_digit": 0.0,
+        "commission_per_million_per_side": 10.0,
+        "stop_out_percent": 50.0,
+    }
+    remembered_inputs = {
+        "personal_risk": 108.33,
+        "stop_points_5_digit": 100.0,
+        "leverage": 300.0,
+        "eurusd_price": 1.14,
+        "broker_deposit": 755.55,
+        "spread_points_5_digit": 0.0,
+        "commission_per_million_per_side": 10.0,
+        "stop_out_percent": 50.0,
+    }
+
+    assert (
+        _liquidity_inputs_for_margin(
+            target_reached=True,
+            current_inputs=current_inputs,
+            remembered_inputs=remembered_inputs,
+        )
+        == remembered_inputs
+    )
+    assert (
+        _liquidity_inputs_for_margin(
+            target_reached=False,
+            current_inputs=current_inputs,
+            remembered_inputs=remembered_inputs,
+        )
+        == current_inputs
+    )
 
 
 def test_synced_broker_deposit_uses_personal_balance_plus_liquidity() -> None:

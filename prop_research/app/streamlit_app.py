@@ -150,12 +150,7 @@ def main() -> None:
 def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
     st.sidebar.subheader("Счет и челлендж")
     challenge_fee = st.sidebar.number_input("Цена челленджа, $", value=prop_firm.challenge_fee, min_value=1.0, step=10.0)
-    nominal_balance = st.sidebar.number_input(
-        "Размер проп-счета, $",
-        value=prop_firm.nominal_balance,
-        min_value=1_000.0,
-        step=1_000.0,
-    )
+    nominal_balance = _account_size_input(st.sidebar, prop_firm.nominal_balance)
 
     default_account_type_index = 2 if _account_type(prop_firm) == "instant" else 1 if len(prop_firm.stages) > 1 else 0
     account_type_label = st.sidebar.selectbox(
@@ -167,32 +162,20 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
     if account_type_label == "Инстант":
         st.sidebar.subheader("Instant")
         funded = prop_firm.funded
-        instant_max_loss_mode = st.sidebar.radio(
-            "Instant: max loss режим",
-            ["amount", "percent"],
-            index=0 if _field(funded, "max_loss_mode", "amount") == "amount" else 1,
-            horizontal=True,
-            key="account_instant_max_loss_mode",
-        )
-        instant_max_loss = st.sidebar.number_input(
-            "Instant: max loss",
-            value=_from_amount(funded.max_loss, instant_max_loss_mode, prop_firm.nominal_balance),
-            min_value=0.01,
-            step=500.0 if instant_max_loss_mode == "amount" else 0.1,
+        instant_max_loss, instant_max_loss_mode = _amount_or_percent_input(
+            st.sidebar,
+            label="Instant: max loss",
+            amount_value=funded.max_loss,
+            default_mode=str(_field(funded, "max_loss_mode", "amount")),
+            nominal_balance=float(nominal_balance),
             key="account_instant_max_loss",
         )
-        instant_daily_loss_mode = st.sidebar.radio(
-            "Instant: daily loss режим",
-            ["amount", "percent"],
-            index=0 if _field(funded, "daily_loss_mode", "amount") == "amount" else 1,
-            horizontal=True,
-            key="account_instant_daily_loss_mode",
-        )
-        instant_daily_loss = st.sidebar.number_input(
-            "Instant: daily loss",
-            value=_from_amount(_field(funded, "daily_loss", None) or funded.max_loss / 2, instant_daily_loss_mode, prop_firm.nominal_balance),
-            min_value=0.01,
-            step=500.0 if instant_daily_loss_mode == "amount" else 0.1,
+        instant_daily_loss, instant_daily_loss_mode = _amount_or_percent_input(
+            st.sidebar,
+            label="Instant: daily loss",
+            amount_value=_field(funded, "daily_loss", None) or funded.max_loss / 2,
+            default_mode=str(_field(funded, "daily_loss_mode", "amount")),
+            nominal_balance=float(nominal_balance),
             key="account_instant_daily_loss",
         )
         instant_max_risk = st.sidebar.number_input(
@@ -215,7 +198,7 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
             value=30.0,
             min_value=0.0,
             max_value=100.0,
-            step=1.0,
+            step=5.0,
             disabled=not consistency_enabled,
             key="instant_consistency",
         )
@@ -241,7 +224,7 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
             value=funded.trader_split * 100,
             min_value=1.0,
             max_value=100.0,
-            step=1.0,
+            step=5.0,
             key="account_instant_split",
         )
         instant_profit_target_enabled = st.sidebar.checkbox("Profit target", value=True, key="funded_profit_target_enabled")
@@ -298,33 +281,21 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
                 step=500.0,
                 key=f"phase_{index}_target",
             )
-            max_loss_mode = st.radio(
-                f"Этап {index}: max loss режим",
-                ["amount", "percent"],
-                index=0 if _field(default_stage, "max_loss_mode", "amount") == "amount" else 1,
-                horizontal=True,
-                key=f"phase_{index}_max_loss_mode",
-            )
-            max_loss_input = st.number_input(
-                f"Этап {index}: max loss",
-                value=_from_amount(default_stage.max_loss, max_loss_mode, prop_firm.nominal_balance),
-                min_value=0.01,
-                step=500.0 if max_loss_mode == "amount" else 0.1,
+            max_loss_input, max_loss_mode = _amount_or_percent_input(
+                st,
+                label=f"Этап {index}: max loss",
+                amount_value=default_stage.max_loss,
+                default_mode=str(_field(default_stage, "max_loss_mode", "amount")),
+                nominal_balance=float(nominal_balance),
                 key=f"phase_{index}_max_loss",
             )
-            daily_loss_mode = st.radio(
-                f"Этап {index}: daily loss режим",
-                ["amount", "percent"],
-                index=0 if _field(default_stage, "daily_loss_mode", "amount") == "amount" else 1,
-                horizontal=True,
-                key=f"phase_{index}_daily_loss_mode",
-            )
             default_daily_loss = _field(default_stage, "daily_loss", None) or default_stage.max_loss / 2
-            daily_loss_input = st.number_input(
-                f"Этап {index}: daily loss",
-                value=_from_amount(default_daily_loss, daily_loss_mode, prop_firm.nominal_balance),
-                min_value=0.01,
-                step=500.0 if daily_loss_mode == "amount" else 0.1,
+            daily_loss_input, daily_loss_mode = _amount_or_percent_input(
+                st,
+                label=f"Этап {index}: daily loss",
+                amount_value=default_daily_loss,
+                default_mode=str(_field(default_stage, "daily_loss_mode", "amount")),
+                nominal_balance=float(nominal_balance),
                 key=f"phase_{index}_daily_loss",
             )
             max_risk = st.number_input(
@@ -347,7 +318,7 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
                 value=15.0,
                 min_value=0.0,
                 max_value=100.0,
-                step=1.0,
+                step=5.0,
                 disabled=not phase_consistency_enabled,
                 key=f"phase_{index}_consistency",
             )
@@ -355,9 +326,9 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
                 _make_stage_config(
                     name=f"phase_{index}",
                     profit_target=float(profit_target),
-                    max_loss=_to_amount(float(max_loss_input), max_loss_mode, prop_firm.nominal_balance),
+                    max_loss=_to_amount(float(max_loss_input), max_loss_mode, float(nominal_balance)),
                     max_loss_mode=max_loss_mode,
-                    daily_loss=_to_amount(float(daily_loss_input), daily_loss_mode, prop_firm.nominal_balance),
+                    daily_loss=_to_amount(float(daily_loss_input), daily_loss_mode, float(nominal_balance)),
                     daily_loss_mode=daily_loss_mode,
                     max_risk_per_trade=float(max_risk),
                     drawdown_mode=drawdown_mode,
@@ -374,29 +345,21 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
         step=500.0,
         disabled=not funded_profit_target_enabled,
     )
-    funded_max_loss_mode = st.sidebar.radio(
-        "Funded: max loss режим",
-        ["amount", "percent"],
-        index=0 if _field(funded, "max_loss_mode", "amount") == "amount" else 1,
-        horizontal=True,
+    funded_max_loss, funded_max_loss_mode = _amount_or_percent_input(
+        st.sidebar,
+        label="Funded: max loss",
+        amount_value=funded.max_loss,
+        default_mode=str(_field(funded, "max_loss_mode", "amount")),
+        nominal_balance=float(nominal_balance),
+        key="funded_max_loss",
     )
-    funded_max_loss = st.sidebar.number_input(
-        "Funded: max loss",
-        value=_from_amount(funded.max_loss, funded_max_loss_mode, prop_firm.nominal_balance),
-        min_value=0.01,
-        step=500.0 if funded_max_loss_mode == "amount" else 0.1,
-    )
-    funded_daily_loss_mode = st.sidebar.radio(
-        "Funded: daily loss режим",
-        ["amount", "percent"],
-        index=0 if _field(funded, "daily_loss_mode", "amount") == "amount" else 1,
-        horizontal=True,
-    )
-    funded_daily_loss = st.sidebar.number_input(
-        "Funded: daily loss",
-        value=_from_amount(_field(funded, "daily_loss", None) or funded.max_loss / 2, funded_daily_loss_mode, prop_firm.nominal_balance),
-        min_value=0.01,
-        step=500.0 if funded_daily_loss_mode == "amount" else 0.1,
+    funded_daily_loss, funded_daily_loss_mode = _amount_or_percent_input(
+        st.sidebar,
+        label="Funded: daily loss",
+        amount_value=_field(funded, "daily_loss", None) or funded.max_loss / 2,
+        default_mode=str(_field(funded, "daily_loss_mode", "amount")),
+        nominal_balance=float(nominal_balance),
+        key="funded_daily_loss",
     )
     funded_max_risk = st.sidebar.number_input(
         "Funded: max risk per trade, $",
@@ -409,7 +372,7 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
         value=funded.trader_split * 100,
         min_value=1.0,
         max_value=100.0,
-        step=1.0,
+        step=5.0,
     )
     funded_drawdown_mode = st.sidebar.radio(
         "Funded: drawdown",
@@ -423,7 +386,7 @@ def _sidebar_rules(st, prop_firm: PropFirmConfig) -> PropFirmConfig:
         value=15.0,
         min_value=0.0,
         max_value=100.0,
-        step=1.0,
+        step=5.0,
         disabled=not funded_consistency_enabled,
         key="funded_consistency",
     )
@@ -490,6 +453,60 @@ def _sidebar_trailing_risk_mode(st, prop_firm: PropFirmConfig) -> TrailingRiskMo
         if label == mode_label:
             return mode
     return default_mode
+
+
+def _account_size_input(container, current_value: float) -> float:
+    presets = [10_000.0, 25_000.0, 50_000.0, 80_000.0, 100_000.0]
+    options = [*presets, "custom"]
+    default_option = float(current_value) if float(current_value) in presets else "custom"
+    selected = container.selectbox(
+        "Размер проп-счета",
+        options,
+        index=options.index(default_option),
+        format_func=lambda value: "Свой вариант" if value == "custom" else _money(float(value)),
+        key="account_nominal_balance_preset",
+    )
+    if selected == "custom":
+        return float(
+            container.number_input(
+                "Свой размер, $",
+                value=float(current_value),
+                min_value=1_000.0,
+                step=1_000.0,
+                key="account_nominal_balance_custom",
+            )
+        )
+    return float(selected)
+
+
+def _amount_or_percent_input(
+    container,
+    label: str,
+    amount_value: float,
+    default_mode: str,
+    nominal_balance: float,
+    key: str,
+) -> tuple[float, str]:
+    mode_options = ["amount", "percent"]
+    container.caption(label)
+    value_col, mode_col = container.columns([3, 1])
+    mode = mode_col.selectbox(
+        "Ед.",
+        mode_options,
+        index=0 if default_mode == "amount" else 1,
+        format_func=lambda value: "$" if value == "amount" else "%",
+        key=f"{key}_mode",
+        label_visibility="collapsed",
+    )
+    value = value_col.number_input(
+        f"{label}, {'$' if mode == 'amount' else '%'}",
+        value=_from_amount(float(amount_value), mode, float(nominal_balance)),
+        min_value=0.01,
+        step=500.0 if mode == "amount" else 0.5,
+        key=f"{key}_value",
+        label_visibility="collapsed",
+    )
+    return float(value), str(mode)
 
 
 def _render_trade_calculator(
@@ -735,6 +752,37 @@ def _render_trade_calculator(
     target_reached = bool(target_enabled_for_stage and float(trade["distance_to_target"]) <= 0.0)
     next_stage_key = _next_stage_key(account_type, stage_key, stage_options) if target_reached else None
     next_stage_label = _next_stage_label(next_stage_key) if target_reached else None
+    next_personal_risk = 0.0 if target_reached else buffered_personal_risk
+    next_prop_risk = 0.0 if target_reached else float(trade["Риск пропа, $"])
+    margin_snapshot_key = f"hedge_margin_last_working_inputs_{stage_key}"
+
+    liquidity_preview = None
+    if bool(st.session_state.get("hedge_margin_check_enabled", False)):
+        preview_extra_liquidity = float(st.session_state.get(f"hedge_margin_extra_liquidity_{stage_key}", 0.0))
+        preview_broker_deposit = _synced_broker_deposit(
+            current_personal_balance=current_personal_balance,
+            extra_liquidity=preview_extra_liquidity,
+        )
+        current_margin_inputs = _margin_liquidity_inputs(
+            personal_risk=next_personal_risk,
+            stop_points_5_digit=stop_points,
+            leverage=float(st.session_state.get(f"hedge_margin_leverage_{stage_key}", 300.0)),
+            eurusd_price=float(st.session_state.get(f"hedge_margin_eurusd_price_{stage_key}", 1.14)),
+            broker_deposit=preview_broker_deposit,
+            spread_points_5_digit=float(st.session_state.get(f"hedge_margin_spread_points_{stage_key}", 0.0)),
+            commission_per_million_per_side=float(st.session_state.get(f"hedge_margin_commission_{stage_key}", 10.0)),
+            stop_out_percent=float(st.session_state.get(f"hedge_margin_stop_out_{stage_key}", 50.0)),
+        )
+        preview_margin_inputs = _liquidity_inputs_for_margin(
+            target_reached=target_reached,
+            current_inputs=current_margin_inputs,
+            remembered_inputs=st.session_state.get(margin_snapshot_key),
+        )
+        if not target_reached and _valid_margin_liquidity_inputs(current_margin_inputs):
+            st.session_state[margin_snapshot_key] = dict(current_margin_inputs)
+        if _valid_margin_liquidity_inputs(preview_margin_inputs):
+            liquidity_preview = _hedge_margin_liquidity(**preview_margin_inputs)
+
     risk_1, risk_2, risk_3 = st.columns(3)
     risk_1.metric("Риск пропа", _money(float(trade["Риск пропа, $"])))
     risk_1.markdown(f"**Лот: {_lot_from_risk_and_stop_points(float(trade['Риск пропа, $']), stop_points):.2f}**")
@@ -752,6 +800,19 @@ def _render_trade_calculator(
     if not target_reached and buffered_personal_risk != base_personal_risk:
         risk_2.caption(f"Расчетный {_money(base_personal_risk)}")
     risk_3.metric("Потрачено личных", _money(personal_spent))
+    if liquidity_preview is not None:
+        liquidity_topup = max(
+            float(liquidity_preview["Докинуть под маржу, $"]),
+            float(liquidity_preview["Докинуть чтобы стоп выдержал, $"]),
+        )
+        if liquidity_topup > 0:
+            risk_3.warning(
+                _escape_markdown_dollars(
+                    f"Ликвидность: докинуть {_money(liquidity_topup)}. [Расчет](#liquidity-personal-hedge)"
+                )
+            )
+        else:
+            risk_3.success("[Маржа ок](#liquidity-personal-hedge)")
 
     status_1, status_2, status_3 = st.columns(3)
     status_1.metric("Баланс личного", _money(current_personal_balance))
@@ -843,32 +904,6 @@ def _render_trade_calculator(
             st.success(str(trade["target_status"]))
     if consider_news:
         st.info(f"Новости учитываются как forced close, а не как штраф. Текущий сценарий закрытия: {forced_close_r:.2f}R.")
-
-    next_personal_risk = 0.0 if target_reached else buffered_personal_risk
-    next_prop_risk = 0.0 if target_reached else float(trade["Риск пропа, $"])
-
-    liquidity_preview = None
-    if bool(st.session_state.get("hedge_margin_check_enabled", False)):
-        preview_extra_liquidity = float(st.session_state.get(f"hedge_margin_extra_liquidity_{stage_key}", 0.0))
-        preview_broker_deposit = _synced_broker_deposit(
-            current_personal_balance=current_personal_balance,
-            extra_liquidity=preview_extra_liquidity,
-        )
-        liquidity_preview = _hedge_margin_liquidity(
-            personal_risk=next_personal_risk,
-            stop_points_5_digit=stop_points,
-            leverage=float(st.session_state.get(f"hedge_margin_leverage_{stage_key}", 300.0)),
-            eurusd_price=float(st.session_state.get(f"hedge_margin_eurusd_price_{stage_key}", 1.14)),
-            broker_deposit=preview_broker_deposit,
-            spread_points_5_digit=float(st.session_state.get(f"hedge_margin_spread_points_{stage_key}", 0.0)),
-            commission_per_million_per_side=float(st.session_state.get(f"hedge_margin_commission_{stage_key}", 10.0)),
-            stop_out_percent=float(st.session_state.get(f"hedge_margin_stop_out_{stage_key}", 50.0)),
-        )
-        if liquidity_preview["Докинуть под маржу, $"] > 0 or liquidity_preview["Докинуть чтобы стоп выдержал, $"] > 0:
-            st.warning(
-                "Ликвидности не хватает: это пополнение только чтобы открыть/удержать hedge до стопа, не новый риск. "
-                "[Открыть расчет ликвидности](#liquidity-personal-hedge)"
-            )
 
     if stage_key == "funded_next":
         cycle_result = _funded_next_cycle_result(
@@ -998,7 +1033,7 @@ def _render_trade_calculator(
                 step=10.0,
                 key=f"hedge_margin_stop_out_{stage_key}",
             )
-            liquidity = _hedge_margin_liquidity(
+            current_detail_margin_inputs = _margin_liquidity_inputs(
                 personal_risk=next_personal_risk,
                 stop_points_5_digit=stop_points,
                 leverage=float(leverage),
@@ -1008,18 +1043,31 @@ def _render_trade_calculator(
                 commission_per_million_per_side=float(commission),
                 stop_out_percent=float(stop_out_percent),
             )
-            liquidity_1, liquidity_2, liquidity_3, liquidity_4 = st.columns(4)
-            liquidity_1.metric("Лот hedge", f"{liquidity['Лот hedge']:.2f}")
-            liquidity_2.metric("Маржа нужна", _money(liquidity["Маржа нужна, $"]))
-            liquidity_3.metric("Критический equity", _money(liquidity["Критический equity Stop Out, $"]))
-            liquidity_4.metric("Equity после стопа", _money(liquidity["Equity после стопа, $"]))
-            stopout_1, stopout_2, stopout_3, stopout_4 = st.columns(4)
-            stopout_1.metric("Запас до Stop Out", _money(liquidity["Запас до Stop Out после стопа, $"]))
-            stopout_2.metric("Докинуть для открытия", _money(liquidity["Докинуть под маржу, $"]))
-            stopout_3.metric("Докинуть до стопа", _money(liquidity["Докинуть чтобы стоп выдержал, $"]))
-            stopout_4.metric("Комиссия+спред", _money(liquidity["Комиссия+спред, $"]))
-            if liquidity["Докинуть под маржу, $"] <= 0 and liquidity["Докинуть чтобы стоп выдержал, $"] <= 0:
-                st.success(_escape_markdown_dollars(f"Маржи хватает. Свободно после маржи: {_money(liquidity['Свободно после маржи, $'])}."))
+            detail_margin_inputs = _liquidity_inputs_for_margin(
+                target_reached=target_reached,
+                current_inputs=current_detail_margin_inputs,
+                remembered_inputs=st.session_state.get(margin_snapshot_key),
+            )
+            if not target_reached and _valid_margin_liquidity_inputs(current_detail_margin_inputs):
+                st.session_state[margin_snapshot_key] = dict(current_detail_margin_inputs)
+            if target_reached and detail_margin_inputs != current_detail_margin_inputs:
+                st.caption("Показан последний расчет маржи перед переходом.")
+            if _valid_margin_liquidity_inputs(detail_margin_inputs):
+                liquidity = _hedge_margin_liquidity(**detail_margin_inputs)
+                liquidity_1, liquidity_2, liquidity_3, liquidity_4 = st.columns(4)
+                liquidity_1.metric("Лот hedge", f"{liquidity['Лот hedge']:.2f}")
+                liquidity_2.metric("Маржа нужна", _money(liquidity["Маржа нужна, $"]))
+                liquidity_3.metric("Критический equity", _money(liquidity["Критический equity Stop Out, $"]))
+                liquidity_4.metric("Equity после стопа", _money(liquidity["Equity после стопа, $"]))
+                stopout_1, stopout_2, stopout_3, stopout_4 = st.columns(4)
+                stopout_1.metric("Запас до Stop Out", _money(liquidity["Запас до Stop Out после стопа, $"]))
+                stopout_2.metric("Докинуть для открытия", _money(liquidity["Докинуть под маржу, $"]))
+                stopout_3.metric("Докинуть до стопа", _money(liquidity["Докинуть чтобы стоп выдержал, $"]))
+                stopout_4.metric("Комиссия+спред", _money(liquidity["Комиссия+спред, $"]))
+                if liquidity["Докинуть под маржу, $"] <= 0 and liquidity["Докинуть чтобы стоп выдержал, $"] <= 0:
+                    st.success(_escape_markdown_dollars(f"Маржи хватает. Свободно после маржи: {_money(liquidity['Свободно после маржи, $'])}."))
+            else:
+                st.info("Расчет маржи появится после следующего рабочего hedge-риска.")
 
     with st.expander("План по стадиям", expanded=False):
         plan_df = pd.DataFrame(
@@ -1604,6 +1652,83 @@ def _funded_next_cycle_result(
         "Результат hedge, $": round(hedge_result, 2),
         "Итог цикла, $": round(payout_after_split + hedge_result, 2),
     }
+
+
+def _margin_liquidity_inputs(
+    *,
+    personal_risk: float,
+    stop_points_5_digit: float,
+    leverage: float,
+    eurusd_price: float,
+    broker_deposit: float,
+    spread_points_5_digit: float,
+    commission_per_million_per_side: float,
+    stop_out_percent: float,
+) -> dict[str, float]:
+    return {
+        "personal_risk": float(personal_risk),
+        "stop_points_5_digit": float(stop_points_5_digit),
+        "leverage": float(leverage),
+        "eurusd_price": float(eurusd_price),
+        "broker_deposit": float(broker_deposit),
+        "spread_points_5_digit": float(spread_points_5_digit),
+        "commission_per_million_per_side": float(commission_per_million_per_side),
+        "stop_out_percent": float(stop_out_percent),
+    }
+
+
+def _valid_margin_liquidity_inputs(inputs: object) -> bool:
+    if not isinstance(inputs, dict):
+        return False
+    required_keys = {
+        "personal_risk",
+        "stop_points_5_digit",
+        "leverage",
+        "eurusd_price",
+        "broker_deposit",
+        "spread_points_5_digit",
+        "commission_per_million_per_side",
+        "stop_out_percent",
+    }
+    if not required_keys.issubset(inputs):
+        return False
+    try:
+        values = {key: float(inputs[key]) for key in required_keys}
+    except (TypeError, ValueError):
+        return False
+    return (
+        all(math.isfinite(value) for value in values.values())
+        and values["personal_risk"] > 0
+        and values["stop_points_5_digit"] > 0
+        and values["leverage"] > 0
+        and values["eurusd_price"] > 0
+        and values["broker_deposit"] >= 0
+        and values["spread_points_5_digit"] >= 0
+        and values["commission_per_million_per_side"] >= 0
+        and values["stop_out_percent"] >= 0
+    )
+
+
+def _liquidity_inputs_for_margin(
+    *,
+    target_reached: bool,
+    current_inputs: dict[str, float],
+    remembered_inputs: object,
+) -> dict[str, float]:
+    if target_reached and _valid_margin_liquidity_inputs(remembered_inputs):
+        return {key: float(value) for key, value in remembered_inputs.items()}
+    return dict(current_inputs)
+
+
+def _liquidity_personal_risk_for_margin(
+    *,
+    target_reached: bool,
+    buffered_personal_risk: float,
+    next_personal_risk: float,
+) -> float:
+    if target_reached:
+        return max(0.0, float(buffered_personal_risk))
+    return max(0.0, float(next_personal_risk))
 
 
 def _hedge_margin_liquidity(
