@@ -8,8 +8,10 @@ from prop_research.app.trading_cockpit import (
     _funded_payout_values,
     _minimum_days_state,
     _minimum_days_text,
+    _margin_settings_changed,
     _pnl_step_for_stage,
     _risk_input_value,
+    _rule_amount_from_input,
     _trailing_line_text,
     apply_template_to_account_state,
     build_default_account_config,
@@ -81,6 +83,39 @@ def test_build_account_summary_uses_saved_calculator_progress() -> None:
     assert summary.distance_to_target == 4_100.0
     assert summary.initial_personal_balance > 0
     assert summary.prop_account_size == 100_000.0
+
+
+def test_rule_amount_input_supports_percent_of_prop_balance() -> None:
+    assert _rule_amount_from_input(8.0, "percent", 100_000.0) == 8_000.0
+    assert _rule_amount_from_input(8_000.0, "amount", 100_000.0) == 8_000.0
+
+
+def test_margin_extra_liquidity_updates_summary_status_when_saved() -> None:
+    config = make_config()
+    base_runtime = {
+        "calculator_stage_key": "funded",
+        "calculator_current_prop_pnl": 4_500.0,
+        "calculator_trade_risk_applied_funded": 1_000.0,
+        "calculator_stop_points_funded": 100.0,
+        "hedge_margin_leverage_funded": 300.0,
+        "hedge_margin_stop_out_funded": 50.0,
+    }
+    account_without_extra = AccountState(
+        name="PipFarm 100k",
+        config=prop_firm_to_template_config(config),
+        ui_state={},
+        runtime_state=base_runtime,
+    )
+    account_with_extra = AccountState(
+        name="PipFarm 100k",
+        config=prop_firm_to_template_config(config),
+        ui_state={},
+        runtime_state={**base_runtime, "hedge_margin_extra_liquidity_funded": 100.0},
+    )
+
+    assert build_account_summary(account_without_extra).margin_topup > 0
+    assert build_account_summary(account_with_extra).margin_topup == 0.0
+    assert _margin_settings_changed(base_runtime, "funded", {"hedge_margin_extra_liquidity": 100.0})
 
 
 def test_instant_economic_trailing_auto_caps_prop_risk_from_settings() -> None:

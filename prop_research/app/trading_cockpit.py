@@ -18,9 +18,11 @@ from prop_research.app.hedge_model import (
 )
 from prop_research.app.streamlit_app import (
     _account_type,
+    _amount_or_percent_input,
     _consistency_state_keys,
     _default_prop_risk_percent,
     _economic_trailing_prop_risk,
+    _field,
     _hedge_margin_liquidity,
     _lot_from_risk_and_stop_points,
     _next_stage_key,
@@ -29,6 +31,7 @@ from prop_research.app.streamlit_app import (
     _stage_max_risk,
     _stage_options,
     _stage_profit_target,
+    _to_amount,
 )
 from prop_research.config.account_states import AccountState, delete_account_state, load_account_states, save_account_state
 from prop_research.config.templates import (
@@ -538,6 +541,11 @@ def _render_account_manager(st, account: AccountState | None, accounts: list[Acc
             st.rerun()
 
 
+def _rule_amount_from_input(value: float, mode: str, nominal_balance: float) -> float:
+    amount = _to_amount(float(value), str(mode), float(nominal_balance))
+    return round(max(0.01, float(amount)), 2)
+
+
 def _render_account_settings(st, account: AccountState | None) -> None:
     if account is None:
         return
@@ -596,38 +604,51 @@ def _render_account_settings(st, account: AccountState | None) -> None:
             stage_count = 1 if kind == "1 фаза" else 2
             for index in range(stage_count):
                 source_stage = config.stages[index] if index < len(config.stages) else build_default_account_config(kind).stages[index]
+                stage_name = f"phase_{index + 1}"
                 st.markdown(f"**Этап {index + 1}**")
+                stage_target, stage_target_mode = _amount_or_percent_input(
+                    st,
+                    label=f"Цель этапа {index + 1}",
+                    amount_value=float(source_stage.profit_target),
+                    default_mode=str(account.ui_state.get(f"settings_stage_target_mode_{stage_name}", "amount")),
+                    nominal_balance=float(nominal_balance),
+                    key=f"settings_stage_target_{account.name}_{index}",
+                )
+                stage_max_loss, stage_max_loss_mode = _amount_or_percent_input(
+                    st,
+                    label=f"Max loss этапа {index + 1}",
+                    amount_value=float(source_stage.max_loss),
+                    default_mode=str(_field(source_stage, "max_loss_mode", "amount")),
+                    nominal_balance=float(nominal_balance),
+                    key=f"settings_stage_loss_{account.name}_{index}",
+                )
+                stage_daily_loss, stage_daily_loss_mode = _amount_or_percent_input(
+                    st,
+                    label=f"Daily loss этапа {index + 1}",
+                    amount_value=float(source_stage.daily_loss or 1.0),
+                    default_mode=str(_field(source_stage, "daily_loss_mode", "amount")),
+                    nominal_balance=float(nominal_balance),
+                    key=f"settings_stage_daily_{account.name}_{index}",
+                )
+                stage_risk, stage_risk_mode = _amount_or_percent_input(
+                    st,
+                    label=f"Риск этапа {index + 1}",
+                    amount_value=float(source_stage.max_risk_per_trade or config.prop_risk_per_trade),
+                    default_mode=str(account.ui_state.get(f"settings_stage_risk_mode_{stage_name}", "amount")),
+                    nominal_balance=float(nominal_balance),
+                    key=f"settings_stage_risk_{account.name}_{index}",
+                )
                 stage_settings.append(
                     {
-                        "name": f"phase_{index + 1}",
-                        "profit_target": st.number_input(
-                            f"Цель этапа {index + 1}, $",
-                            value=float(source_stage.profit_target),
-                            min_value=1.0,
-                            step=500.0,
-                            key=f"settings_stage_target_{account.name}_{index}",
-                        ),
-                        "max_loss": st.number_input(
-                            f"Max loss этапа {index + 1}, $",
-                            value=float(source_stage.max_loss),
-                            min_value=1.0,
-                            step=500.0,
-                            key=f"settings_stage_loss_{account.name}_{index}",
-                        ),
-                        "daily_loss": st.number_input(
-                            f"Daily loss этапа {index + 1}, $",
-                            value=float(source_stage.daily_loss or 1.0),
-                            min_value=1.0,
-                            step=500.0,
-                            key=f"settings_stage_daily_{account.name}_{index}",
-                        ),
-                        "max_risk_per_trade": st.number_input(
-                            f"Риск этапа {index + 1}, $",
-                            value=float(source_stage.max_risk_per_trade or config.prop_risk_per_trade),
-                            min_value=1.0,
-                            step=100.0,
-                            key=f"settings_stage_risk_{account.name}_{index}",
-                        ),
+                        "name": stage_name,
+                        "profit_target": stage_target,
+                        "profit_target_mode": stage_target_mode,
+                        "max_loss": stage_max_loss,
+                        "max_loss_mode": stage_max_loss_mode,
+                        "daily_loss": stage_daily_loss,
+                        "daily_loss_mode": stage_daily_loss_mode,
+                        "max_risk_per_trade": stage_risk,
+                        "max_risk_per_trade_mode": stage_risk_mode,
                         "drawdown_mode": st.selectbox(
                             f"Просадка этапа {index + 1}",
                             ["static", "trailing"],
@@ -639,26 +660,36 @@ def _render_account_settings(st, account: AccountState | None) -> None:
 
         funded_source = config.funded
         st.markdown("**Funded / Instant**")
-        funded_target = st.number_input(
-            "Цель до выплаты, $",
-            value=float(funded_source.profit_target_for_first_payout),
-            min_value=1.0,
-            step=500.0,
+        funded_target, funded_target_mode = _amount_or_percent_input(
+            st,
+            label="Цель до выплаты",
+            amount_value=float(funded_source.profit_target_for_first_payout),
+            default_mode=str(account.ui_state.get("settings_funded_target_mode", "amount")),
+            nominal_balance=float(nominal_balance),
             key=f"settings_funded_target_{account.name}",
         )
-        funded_max_loss = st.number_input("Funded max loss, $", value=float(funded_source.max_loss), min_value=1.0, step=500.0, key=f"settings_funded_loss_{account.name}")
-        funded_daily_loss = st.number_input(
-            "Funded daily loss, $",
-            value=float(funded_source.daily_loss or 1.0),
-            min_value=1.0,
-            step=500.0,
+        funded_max_loss, funded_max_loss_mode = _amount_or_percent_input(
+            st,
+            label="Funded max loss",
+            amount_value=float(funded_source.max_loss),
+            default_mode=str(_field(funded_source, "max_loss_mode", "amount")),
+            nominal_balance=float(nominal_balance),
+            key=f"settings_funded_loss_{account.name}",
+        )
+        funded_daily_loss, funded_daily_loss_mode = _amount_or_percent_input(
+            st,
+            label="Funded daily loss",
+            amount_value=float(funded_source.daily_loss or 1.0),
+            default_mode=str(_field(funded_source, "daily_loss_mode", "amount")),
+            nominal_balance=float(nominal_balance),
             key=f"settings_funded_daily_{account.name}",
         )
-        funded_risk = st.number_input(
-            "Funded / instant риск, $",
-            value=float(funded_source.max_risk_per_trade or config.prop_risk_per_trade),
-            min_value=1.0,
-            step=100.0,
+        funded_risk, funded_risk_mode = _amount_or_percent_input(
+            st,
+            label="Funded / instant риск",
+            amount_value=float(funded_source.max_risk_per_trade or config.prop_risk_per_trade),
+            default_mode=str(account.ui_state.get("settings_funded_risk_mode", "amount")),
+            nominal_balance=float(nominal_balance),
             key=f"settings_funded_risk_{account.name}",
         )
         funded_split_percent = st.number_input(
@@ -682,6 +713,11 @@ def _render_account_settings(st, account: AccountState | None) -> None:
         ui_state["execution_spread_points"] = float(execution_spread_points)
         ui_state["execution_commission_per_lot"] = float(execution_commission_per_lot)
         ui_state["instant_prop_risk_strategy"] = instant_prop_risk_strategy
+        for item in stage_settings:
+            ui_state[f"settings_stage_target_mode_{item['name']}"] = str(item["profit_target_mode"])
+            ui_state[f"settings_stage_risk_mode_{item['name']}"] = str(item["max_risk_per_trade_mode"])
+        ui_state["settings_funded_target_mode"] = str(funded_target_mode)
+        ui_state["settings_funded_risk_mode"] = str(funded_risk_mode)
         if _execution_settings_changed(account.ui_state, ui_state):
             _save_account(
                 AccountState(
@@ -699,23 +735,31 @@ def _render_account_settings(st, account: AccountState | None) -> None:
             stages = [
                 StageConfig(
                     name=str(item["name"]),
-                    profit_target=float(item["profit_target"]),
-                    max_loss=float(item["max_loss"]),
-                    daily_loss=float(item["daily_loss"]),
-                    max_risk_per_trade=float(item["max_risk_per_trade"]),
+                    profit_target=_rule_amount_from_input(float(item["profit_target"]), str(item["profit_target_mode"]), float(nominal_balance)),
+                    max_loss=_rule_amount_from_input(float(item["max_loss"]), str(item["max_loss_mode"]), float(nominal_balance)),
+                    max_loss_mode=str(item["max_loss_mode"]),
+                    daily_loss=_rule_amount_from_input(float(item["daily_loss"]), str(item["daily_loss_mode"]), float(nominal_balance)),
+                    daily_loss_mode=str(item["daily_loss_mode"]),
+                    max_risk_per_trade=_rule_amount_from_input(
+                        float(item["max_risk_per_trade"]),
+                        str(item["max_risk_per_trade_mode"]),
+                        float(nominal_balance),
+                    ),
                     drawdown_mode=str(item["drawdown_mode"]),
                 )
                 for item in stage_settings
             ]
             funded = FundedConfig(
-                profit_target_for_first_payout=float(funded_target),
-                max_loss=float(funded_max_loss),
-                daily_loss=float(funded_daily_loss),
-                max_risk_per_trade=float(funded_risk),
+                profit_target_for_first_payout=_rule_amount_from_input(float(funded_target), str(funded_target_mode), float(nominal_balance)),
+                max_loss=_rule_amount_from_input(float(funded_max_loss), str(funded_max_loss_mode), float(nominal_balance)),
+                max_loss_mode=str(funded_max_loss_mode),
+                daily_loss=_rule_amount_from_input(float(funded_daily_loss), str(funded_daily_loss_mode), float(nominal_balance)),
+                daily_loss_mode=str(funded_daily_loss_mode),
+                max_risk_per_trade=_rule_amount_from_input(float(funded_risk), str(funded_risk_mode), float(nominal_balance)),
                 trader_split=float(funded_split_percent) / 100,
                 drawdown_mode=str(funded_drawdown),
             )
-            prop_risk = float(funded_risk if kind == "Инстант" else stages[0].max_risk_per_trade or funded_risk)
+            prop_risk = float(funded.max_risk_per_trade if kind == "Инстант" else stages[0].max_risk_per_trade or funded.max_risk_per_trade)
             updated_config = PropFirmConfig(
                 challenge_fee=float(challenge_fee),
                 nominal_balance=float(nominal_balance),
@@ -959,6 +1003,28 @@ def _render_margin_panel(st, account: AccountState, summary: CockpitSummary, sto
             step=1.0,
             key=f"margin_panel_commission_{account.name}_{stage_key}",
         )
+        margin_settings = {
+            "hedge_margin_leverage": float(leverage),
+            "hedge_margin_stop_out": float(stop_out),
+            "hedge_margin_eurusd_price": float(eurusd_price),
+            "hedge_margin_spread_points": float(spread_points),
+            "hedge_margin_commission": float(commission),
+            "hedge_margin_extra_liquidity": float(extra_liquidity),
+        }
+        if _margin_settings_changed(runtime, stage_key, margin_settings):
+            updated_runtime = dict(account.runtime_state)
+            for key, value in margin_settings.items():
+                updated_runtime[f"{key}_{stage_key}"] = value
+                updated_runtime[f"{key}_global"] = value
+            _save_account(
+                AccountState(
+                    name=account.name,
+                    config=account.config,
+                    ui_state=account.ui_state,
+                    runtime_state=updated_runtime,
+                )
+            )
+            st.rerun()
 
         liquidity = _hedge_margin_liquidity(
             personal_risk=summary.personal_risk,
@@ -988,14 +1054,6 @@ def _render_margin_panel(st, account: AccountState, summary: CockpitSummary, sto
         )
         if st.button("Сохранить параметры ликвидности", use_container_width=True, key=f"margin_panel_save_{account.name}_{stage_key}"):
             updated_runtime = dict(account.runtime_state)
-            margin_settings = {
-                "hedge_margin_leverage": float(leverage),
-                "hedge_margin_stop_out": float(stop_out),
-                "hedge_margin_eurusd_price": float(eurusd_price),
-                "hedge_margin_spread_points": float(spread_points),
-                "hedge_margin_commission": float(commission),
-                "hedge_margin_extra_liquidity": float(extra_liquidity),
-            }
             for key, value in margin_settings.items():
                 updated_runtime[f"{key}_{stage_key}"] = value
                 updated_runtime[f"{key}_global"] = value
@@ -1122,6 +1180,24 @@ def _personal_risk_with_execution_costs(personal_risk: float, stop_points: float
     manual_spread_points = max(0.0, _float_state(ui_state, "execution_spread_points", 0.0))
     commission_per_lot = max(0.0, _float_state(ui_state, "execution_commission_per_lot", 0.0))
     return round(clean_risk + hedge_lot * (auto_buffer_points + manual_spread_points + commission_per_lot), 2)
+
+
+_MARGIN_SETTING_DEFAULTS = {
+    "hedge_margin_leverage": 300.0,
+    "hedge_margin_stop_out": 50.0,
+    "hedge_margin_eurusd_price": 1.14,
+    "hedge_margin_spread_points": 0.0,
+    "hedge_margin_commission": 10.0,
+    "hedge_margin_extra_liquidity": 0.0,
+}
+
+
+def _margin_settings_changed(runtime: dict, stage_key: str, settings: dict[str, float]) -> bool:
+    for key, value in settings.items():
+        current = _float_state(runtime, f"{key}_{stage_key}", _MARGIN_SETTING_DEFAULTS.get(key, 0.0))
+        if round(current, 8) != round(float(value), 8):
+            return True
+    return False
 
 
 def _margin_topup_for_runtime(runtime: dict, stage_key: str, personal_balance: float, personal_risk: float, stop_points: float) -> float:
