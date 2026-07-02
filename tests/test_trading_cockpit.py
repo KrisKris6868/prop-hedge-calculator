@@ -129,6 +129,32 @@ def test_execution_buffer_increases_personal_risk_for_every_account_type() -> No
     assert buffered.personal_risk == round(base.personal_risk * 1.10, 2)
 
 
+def test_execution_costs_are_added_to_personal_risk_without_changing_lot() -> None:
+    base_account = AccountState(
+        name="PipFarm 100k",
+        config=prop_firm_to_template_config(make_config()),
+        ui_state={},
+        runtime_state={
+            "calculator_stage_key": "phase_1",
+            "calculator_current_prop_pnl": 0.0,
+            "calculator_stop_points_phase_1": 100.0,
+            "calculator_trade_risk_applied_phase_1": 1_000.0,
+        },
+    )
+    costed_account = AccountState(
+        name=base_account.name,
+        config=base_account.config,
+        ui_state={"execution_spread_points": 13.0, "execution_commission_per_lot": 7.0},
+        runtime_state=base_account.runtime_state,
+    )
+
+    base = build_account_summary(base_account)
+    costed = build_account_summary(costed_account)
+
+    assert costed.hedge_lot == base.hedge_lot
+    assert costed.personal_risk == round(base.personal_risk + base.hedge_lot * 20.0, 2)
+
+
 def test_create_account_state_from_template_starts_clean_path() -> None:
     template = PropTemplate(
         name="PipFarm 100k 2f-35%",

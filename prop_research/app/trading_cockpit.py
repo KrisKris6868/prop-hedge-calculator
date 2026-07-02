@@ -146,9 +146,10 @@ def build_account_summary(account: AccountState) -> CockpitSummary:
     )
     effective_prop_risk = float(trade["Риск пропа, $"])
     base_personal_risk = _finite_amount(float(trade["Риск личного, $"]))
-    personal_risk = _personal_risk_with_execution_buffer(base_personal_risk, _execution_buffer_mode(ui_state))
+    buffered_personal_risk = _personal_risk_with_execution_buffer(base_personal_risk, _execution_buffer_mode(ui_state))
+    personal_risk = _personal_risk_with_execution_costs(buffered_personal_risk, stop_points, ui_state)
     prop_lot = _lot_from_risk_and_stop_points(effective_prop_risk, stop_points)
-    hedge_lot = _lot_from_risk_and_stop_points(personal_risk, stop_points)
+    hedge_lot = _lot_from_risk_and_stop_points(buffered_personal_risk, stop_points)
     margin_topup = _margin_topup_for_runtime(runtime, stage_key, personal_balance, personal_risk, stop_points)
     distance_to_target = float(trade["distance_to_target"])
     distance_to_max_loss = float(trade["distance_to_max_loss"])
@@ -466,6 +467,8 @@ def _default_ui_state_for_kind(account_kind: str) -> dict[str, object]:
             "minimum_profitable_day_percent": 0.5,
             "trailing_risk_mode_label_v2": "Адаптивная",
             "execution_buffer_mode": "off",
+            "execution_spread_points": 0.0,
+            "execution_commission_per_lot": 0.0,
             "instant_prop_risk_strategy": "Вручную",
         }
     return {
@@ -480,6 +483,8 @@ def _default_ui_state_for_kind(account_kind: str) -> dict[str, object]:
         "minimum_profitable_day_percent": 0.5,
         "trailing_risk_mode_label_v2": "Консервативная",
         "execution_buffer_mode": "off",
+        "execution_spread_points": 0.0,
+        "execution_commission_per_lot": 0.0,
         "instant_prop_risk_strategy": "Вручную",
     }
 
@@ -553,6 +558,21 @@ def _render_account_settings(st, account: AccountState | None) -> None:
                 "safety_15": "15% spread/slippage",
             }.get,
             key=f"settings_execution_buffer_{account.name}",
+        )
+        cost_col_1, cost_col_2 = st.columns(2)
+        execution_spread_points = cost_col_1.number_input(
+            "Спред/проскальз., пункты",
+            value=_float_state(account.ui_state, "execution_spread_points", 0.0),
+            min_value=0.0,
+            step=1.0,
+            key=f"settings_execution_spread_{account.name}",
+        )
+        execution_commission_per_lot = cost_col_2.number_input(
+            "Комиссия за lot, $",
+            value=_float_state(account.ui_state, "execution_commission_per_lot", 0.0),
+            min_value=0.0,
+            step=1.0,
+            key=f"settings_execution_commission_lot_{account.name}",
         )
         instant_prop_risk_strategy = str(account.ui_state.get("instant_prop_risk_strategy", "Вручную"))
         if kind == "Инстант":
@@ -651,6 +671,8 @@ def _render_account_settings(st, account: AccountState | None) -> None:
         ui_state = dict(account.ui_state)
         ui_state["trailing_risk_mode_label_v2"] = trailing_label
         ui_state["execution_buffer_mode"] = execution_buffer_mode
+        ui_state["execution_spread_points"] = float(execution_spread_points)
+        ui_state["execution_commission_per_lot"] = float(execution_commission_per_lot)
         ui_state["instant_prop_risk_strategy"] = instant_prop_risk_strategy
         _render_rule_settings(st, ui_state, account.name, kind)
 
@@ -1030,6 +1052,14 @@ def _uses_auto_prop_risk(config: PropFirmConfig, ui_state: dict, stage_key: str)
 
 def _execution_buffer_mode(ui_state: dict) -> str:
     return str(ui_state.get("execution_buffer_mode", "off"))
+
+
+def _personal_risk_with_execution_costs(personal_risk: float, stop_points: float, ui_state: dict) -> float:
+    clean_risk = max(0.0, float(personal_risk))
+    hedge_lot = _lot_from_risk_and_stop_points(clean_risk, stop_points)
+    spread_points = max(0.0, _float_state(ui_state, "execution_spread_points", 0.0))
+    commission_per_lot = max(0.0, _float_state(ui_state, "execution_commission_per_lot", 0.0))
+    return round(clean_risk + hedge_lot * (spread_points + commission_per_lot), 2)
 
 
 def _margin_topup_for_runtime(runtime: dict, stage_key: str, personal_balance: float, personal_risk: float, stop_points: float) -> float:
