@@ -479,6 +479,7 @@ def _default_ui_state_for_kind(account_kind: str) -> dict[str, object]:
             "execution_buffer_mode": "off",
             "execution_spread_points": 0.0,
             "execution_commission_per_lot": 0.0,
+            "challenge_static_risk_strategy": "Вручную",
         }
     return {
         "phase_1_consistency_enabled": False,
@@ -494,6 +495,7 @@ def _default_ui_state_for_kind(account_kind: str) -> dict[str, object]:
         "execution_buffer_mode": "off",
         "execution_spread_points": 0.0,
         "execution_commission_per_lot": 0.0,
+        "challenge_static_risk_strategy": "Вручную",
     }
 
 
@@ -588,6 +590,14 @@ def _render_account_settings(st, account: AccountState | None) -> None:
             key=f"settings_execution_commission_lot_{account.name}",
         )
         st.caption("Execution buffer сам добавляется к риску как процент от стопа. Ручные поля — только дополнительная погрешность сверху.")
+        challenge_static_risk_strategy = str(account.ui_state.get("challenge_static_risk_strategy", "Вручную"))
+        if kind != "Инстант":
+            challenge_static_risk_strategy = st.selectbox(
+                "Стратегия риска static challenge",
+                ["Вручную", "Экономный static"],
+                index=0 if challenge_static_risk_strategy != "Экономный static" else 1,
+                key=f"settings_challenge_static_risk_strategy_{account.name}",
+            )
         stage_settings: list[dict[str, object]] = []
         if kind != "Инстант":
             stage_count = 1 if kind == "1 фаза" else 2
@@ -701,6 +711,7 @@ def _render_account_settings(st, account: AccountState | None) -> None:
         ui_state["execution_buffer_mode"] = execution_buffer_mode
         ui_state["execution_spread_points"] = float(execution_spread_points)
         ui_state["execution_commission_per_lot"] = float(execution_commission_per_lot)
+        ui_state["challenge_static_risk_strategy"] = challenge_static_risk_strategy
         for item in stage_settings:
             ui_state[f"settings_stage_target_mode_{item['name']}"] = str(item["profit_target_mode"])
             ui_state[f"settings_stage_risk_mode_{item['name']}"] = str(item["max_risk_per_trade_mode"])
@@ -1104,6 +1115,8 @@ def _prop_risk_for_account_strategy(
 ) -> float:
     if not _uses_auto_prop_risk(config, ui_state, stage_key):
         return float(manual_risk)
+    if _uses_challenge_static_auto_prop_risk(config, ui_state, stage_key):
+        return _economic_static_prop_risk(config, ui_state, stage_key, current_pnl)
     recommended_risk, _reason = _economic_trailing_prop_risk(
         max_risk_per_trade=_stage_max_risk(config, stage_key),
         nominal_balance=config.nominal_balance,
@@ -1119,11 +1132,39 @@ def _prop_risk_for_account_strategy(
 
 
 def _uses_auto_prop_risk(config: PropFirmConfig, ui_state: dict, stage_key: str) -> bool:
+    if _uses_challenge_static_auto_prop_risk(config, ui_state, stage_key):
+        return True
     return (
         _account_type(config) == "instant"
         and stage_key in {"funded", "funded_next"}
         and config.funded.drawdown_mode == "trailing"
     )
+
+
+def _uses_challenge_static_auto_prop_risk(config: PropFirmConfig, ui_state: dict, stage_key: str) -> bool:
+    return (
+        _account_type(config) == "challenge"
+        and stage_key.startswith("phase_")
+        and str(ui_state.get("challenge_static_risk_strategy", "Вручную")) == "Экономный static"
+        and _stage_drawdown_mode(config, stage_key) == "static"
+    )
+
+
+def _economic_static_prop_risk(config: PropFirmConfig, ui_state: dict, stage_key: str, current_pnl: float) -> float:
+    max_risk = max(1.0, _stage_max_risk(config, stage_key))
+    target = _stage_profit_target(config, stage_key)
+    remaining_to_target = max(0.0, target - float(current_pnl)) if target > 0 else max_risk
+    enabled_key, percent_key = _consistency_state_keys("challenge", stage_key)
+    consistency_percent = _float_state(ui_state, percent_key, 0.0)
+    consistency_cap = (
+        max(1.0, target * consistency_percent / 100)
+        if bool(ui_state.get(enabled_key, False)) and consistency_percent > 0 and target > 0
+        else max_risk
+    )
+    risk = min(max_risk, consistency_cap)
+    if remaining_to_target > 0:
+        risk = min(risk, remaining_to_target)
+    return round(max(1.0, risk), 2)
 
 
 def _model_stage_key(stage_key: str) -> str:

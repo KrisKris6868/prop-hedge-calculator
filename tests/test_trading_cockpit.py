@@ -183,6 +183,70 @@ def test_instant_static_keeps_manual_prop_risk() -> None:
     assert _uses_auto_prop_risk(static_config, {}, "funded") is False
 
 
+def test_challenge_static_keeps_manual_risk_by_default() -> None:
+    account = AccountState(
+        name="PipFarm 100k",
+        config=prop_firm_to_template_config(make_config()),
+        ui_state={},
+        runtime_state={
+            "calculator_stage_key": "phase_1",
+            "calculator_current_prop_pnl": 0.0,
+            "calculator_trade_risk_applied_phase_1": 3_000.0,
+            "calculator_stop_points_phase_1": 100.0,
+        },
+    )
+
+    summary = build_account_summary(account)
+
+    assert _uses_auto_prop_risk(make_config(), account.ui_state, "phase_1") is False
+    assert summary.prop_risk == 3_000.0
+
+
+def test_challenge_static_economic_caps_risk_by_consistency_rule() -> None:
+    config = make_config()
+    stages = list(config.stages)
+    stages[0] = replace(stages[0], max_risk_per_trade=3_000.0)
+    config = replace(config, stages=stages, prop_risk_per_trade=3_000.0)
+    account = AccountState(
+        name="PipFarm 100k",
+        config=prop_firm_to_template_config(config),
+        ui_state={
+            "challenge_static_risk_strategy": "Экономный static",
+            "phase_1_consistency_enabled": True,
+            "phase_1_consistency": 35.0,
+        },
+        runtime_state={
+            "calculator_stage_key": "phase_1",
+            "calculator_current_prop_pnl": 0.0,
+            "calculator_trade_risk_applied_phase_1": 3_000.0,
+            "calculator_stop_points_phase_1": 100.0,
+        },
+    )
+
+    summary = build_account_summary(account)
+
+    assert _uses_auto_prop_risk(config, account.ui_state, "phase_1") is True
+    assert summary.prop_risk == 2_100.0
+
+
+def test_challenge_static_economic_caps_risk_to_target_remainder() -> None:
+    account = AccountState(
+        name="PipFarm 100k",
+        config=prop_firm_to_template_config(make_config()),
+        ui_state={"challenge_static_risk_strategy": "Экономный static"},
+        runtime_state={
+            "calculator_stage_key": "phase_1",
+            "calculator_current_prop_pnl": 5_600.0,
+            "calculator_trade_risk_applied_phase_1": 1_900.0,
+            "calculator_stop_points_phase_1": 100.0,
+        },
+    )
+
+    summary = build_account_summary(account)
+
+    assert summary.prop_risk == 400.0
+
+
 def test_execution_buffer_increases_personal_risk_for_every_account_type() -> None:
     base_account = AccountState(
         name="PipFarm 100k",
