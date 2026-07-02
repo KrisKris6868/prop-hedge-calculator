@@ -383,6 +383,28 @@ def test_preview_caps_pnl_to_stage_target() -> None:
     assert summary.status == "2-я фаза"
 
 
+def test_preview_caps_pnl_to_stage_max_loss() -> None:
+    config = build_default_account_config("Инстант")
+    account = AccountState(
+        name="Instant",
+        config=prop_firm_to_template_config(config),
+        ui_state={},
+        runtime_state={
+            "calculator_stage_key": "funded",
+            "calculator_current_prop_pnl": 0.0,
+            "calculator_stop_points_funded": 100.0,
+            "calculator_trade_risk_applied_funded": 900.0,
+        },
+    )
+
+    preview = preview_account_state(account, stage_key="funded", pnl=-6_750.0, stop_points=100.0, risk=900.0)
+    summary = build_account_summary(preview)
+
+    assert preview.runtime_state["calculator_current_prop_pnl"] == -6_000.0
+    assert summary.current_pnl == -6_000.0
+    assert summary.distance_to_max_loss == 0.0
+
+
 def test_preview_records_pnl_change_as_stage_trade_and_largest_win() -> None:
     account = AccountState(
         name="PipFarm 100k",

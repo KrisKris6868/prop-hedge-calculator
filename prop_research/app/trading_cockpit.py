@@ -1192,9 +1192,10 @@ def _minimum_days_state(value: str) -> str:
 def _cap_pnl_to_stage_target(config: PropFirmConfig, stage_key: str, pnl: float) -> float:
     target = _stage_profit_target(config, stage_key)
     pnl_value = float(pnl)
+    max_loss_floor = -_stage_max_loss(config, stage_key)
     if target <= 0:
-        return pnl_value
-    return min(pnl_value, target)
+        return max(max_loss_floor, pnl_value)
+    return max(max_loss_floor, min(pnl_value, target))
 
 
 def _pnl_step_for_stage(config: PropFirmConfig, stage_key: str, current_pnl: float, risk: float) -> float:
