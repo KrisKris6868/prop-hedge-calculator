@@ -13,6 +13,7 @@ from prop_research.app.trading_cockpit import (
     _risk_input_value,
     _rule_amount_from_input,
     _trailing_line_text,
+    _uses_auto_prop_risk,
     apply_template_to_account_state,
     build_default_account_config,
     build_account_summary,
@@ -139,6 +140,47 @@ def test_instant_economic_trailing_auto_caps_prop_risk_from_settings() -> None:
     summary = build_account_summary(account)
 
     assert summary.prop_risk == 750.0
+
+
+def test_instant_trailing_uses_auto_prop_risk_without_extra_setting() -> None:
+    config = build_default_account_config("Инстант")
+    account = AccountState(
+        name="Instant",
+        config=prop_firm_to_template_config(config),
+        ui_state={"instant_consistency_enabled": True, "instant_consistency": 15.0},
+        runtime_state={
+            "calculator_stage_key": "funded",
+            "calculator_current_prop_pnl": 0.0,
+            "calculator_trade_risk_applied_funded": 900.0,
+            "calculator_stop_points_funded": 100.0,
+        },
+    )
+
+    summary = build_account_summary(account)
+
+    assert _uses_auto_prop_risk(config, account.ui_state, "funded") is True
+    assert summary.prop_risk == 750.0
+
+
+def test_instant_static_keeps_manual_prop_risk() -> None:
+    config = build_default_account_config("Инстант")
+    static_config = PropFirmConfig(
+        challenge_fee=config.challenge_fee,
+        nominal_balance=config.nominal_balance,
+        stages=[],
+        funded=FundedConfig(
+            profit_target_for_first_payout=config.funded.profit_target_for_first_payout,
+            max_loss=config.funded.max_loss,
+            daily_loss=config.funded.daily_loss,
+            max_risk_per_trade=config.funded.max_risk_per_trade,
+            trader_split=config.funded.trader_split,
+            drawdown_mode="static",
+        ),
+        prop_risk_per_trade=config.prop_risk_per_trade,
+        account_type="instant",
+    )
+
+    assert _uses_auto_prop_risk(static_config, {}, "funded") is False
 
 
 def test_execution_buffer_increases_personal_risk_for_every_account_type() -> None:
@@ -616,7 +658,7 @@ def test_consistency_text_is_dash_when_disabled_and_plain_when_no_trades() -> No
     assert _consistency_text(enabled, "phase_1", 0.0) == "Сделок не было"
 
 
-def test_consistency_text_falls_back_to_current_positive_pnl_for_legacy_state() -> None:
+def test_consistency_text_does_not_treat_current_pnl_as_single_trade() -> None:
     config = make_config()
     account = AccountState(
         name="PipFarm 100k",
@@ -625,8 +667,24 @@ def test_consistency_text_falls_back_to_current_positive_pnl_for_legacy_state() 
         runtime_state={"calculator_stage_key": "phase_1", "calculator_largest_winning_trade_phase_1": 0.0},
     )
 
-    assert _consistency_text(account, "phase_1", 5_500.0) == "max $5,500.00<br>35%"
+    assert _consistency_text(account, "phase_1", 5_500.0) == "Сделок не было"
     assert _consistency_state(account, "phase_1", 5_500.0) == "warn"
+
+
+def test_consistency_uses_largest_profit_from_trade_journal_when_saved_value_missing() -> None:
+    config = make_config()
+    account = AccountState(
+        name="PipFarm 100k",
+        config=prop_firm_to_template_config(config),
+        ui_state={"phase_1_consistency_enabled": True, "phase_1_consistency": 35.0},
+        runtime_state={
+            "calculator_stage_key": "phase_1",
+            "calculator_largest_winning_trade_phase_1": 0.0,
+            "calculator_trade_journal_phase_1": [{"pnl_delta": 500.0}, {"pnl_delta": -300.0}, {"pnl_delta": 900.0}],
+        },
+    )
+
+    assert _consistency_text(account, "phase_1", 3_000.0) == "max $900.00<br>35%"
 
 
 def test_minimum_days_text_is_compact_fraction_or_dash() -> None:

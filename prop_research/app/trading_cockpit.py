@@ -479,7 +479,6 @@ def _default_ui_state_for_kind(account_kind: str) -> dict[str, object]:
             "execution_buffer_mode": "off",
             "execution_spread_points": 0.0,
             "execution_commission_per_lot": 0.0,
-            "instant_prop_risk_strategy": "Вручную",
         }
     return {
         "phase_1_consistency_enabled": False,
@@ -495,7 +494,6 @@ def _default_ui_state_for_kind(account_kind: str) -> dict[str, object]:
         "execution_buffer_mode": "off",
         "execution_spread_points": 0.0,
         "execution_commission_per_lot": 0.0,
-        "instant_prop_risk_strategy": "Вручную",
     }
 
 
@@ -590,15 +588,6 @@ def _render_account_settings(st, account: AccountState | None) -> None:
             key=f"settings_execution_commission_lot_{account.name}",
         )
         st.caption("Execution buffer сам добавляется к риску как процент от стопа. Ручные поля — только дополнительная погрешность сверху.")
-        instant_prop_risk_strategy = str(account.ui_state.get("instant_prop_risk_strategy", "Вручную"))
-        if kind == "Инстант":
-            instant_prop_risk_strategy = st.selectbox(
-                "Стратегия риска пропа",
-                ["Вручную", "Экономный trailing"],
-                index=0 if instant_prop_risk_strategy != "Экономный trailing" else 1,
-                key=f"settings_instant_prop_risk_strategy_{account.name}",
-            )
-
         stage_settings: list[dict[str, object]] = []
         if kind != "Инстант":
             stage_count = 1 if kind == "1 фаза" else 2
@@ -712,7 +701,6 @@ def _render_account_settings(st, account: AccountState | None) -> None:
         ui_state["execution_buffer_mode"] = execution_buffer_mode
         ui_state["execution_spread_points"] = float(execution_spread_points)
         ui_state["execution_commission_per_lot"] = float(execution_commission_per_lot)
-        ui_state["instant_prop_risk_strategy"] = instant_prop_risk_strategy
         for item in stage_settings:
             ui_state[f"settings_stage_target_mode_{item['name']}"] = str(item["profit_target_mode"])
             ui_state[f"settings_stage_risk_mode_{item['name']}"] = str(item["max_risk_per_trade_mode"])
@@ -1134,7 +1122,6 @@ def _uses_auto_prop_risk(config: PropFirmConfig, ui_state: dict, stage_key: str)
     return (
         _account_type(config) == "instant"
         and stage_key in {"funded", "funded_next"}
-        and str(ui_state.get("instant_prop_risk_strategy", "Вручную")) == "Экономный trailing"
         and config.funded.drawdown_mode == "trailing"
     )
 
@@ -1244,9 +1231,7 @@ def _consistency_text(account: AccountState, stage_key: str, current_pnl: float)
     enabled_key, percent_key = _consistency_state_keys(account_type, stage_key)
     enabled = bool(account.ui_state.get(enabled_key, False))
     rule_percent = _float_state(account.ui_state, percent_key, 0.0)
-    largest_profit = _float_state(account.runtime_state, f"calculator_largest_winning_trade_{stage_key}", 0.0)
-    if largest_profit <= 0 and current_pnl > 0:
-        largest_profit = float(current_pnl)
+    largest_profit = _largest_winning_trade(account.runtime_state, stage_key)
     if not enabled:
         return "—"
     if rule_percent <= 0 or largest_profit <= 0:
@@ -1282,6 +1267,22 @@ def _profitable_days_from_journal(journal: object, *, minimum_day_profit: float,
         if pnl_delta >= minimum_day_profit:
             completed += 1
     return min(required_days, completed)
+
+
+def _largest_winning_trade(runtime: dict, stage_key: str) -> float:
+    largest = _float_state(runtime, f"calculator_largest_winning_trade_{stage_key}", 0.0)
+    journal = runtime.get(f"calculator_trade_journal_{stage_key}", [])
+    if isinstance(journal, list):
+        for item in journal:
+            if not isinstance(item, dict):
+                continue
+            try:
+                pnl_delta = float(item.get("pnl_delta", 0.0))
+            except (TypeError, ValueError):
+                continue
+            if pnl_delta > largest:
+                largest = pnl_delta
+    return max(0.0, largest)
 
 
 def _trailing_line_text(account: AccountState, config: PropFirmConfig, stage_key: str, current_pnl: float) -> str | None:
@@ -1334,9 +1335,7 @@ def _consistency_state(account: AccountState, stage_key: str, current_pnl: float
     enabled_key, percent_key = _consistency_state_keys(account_type, stage_key)
     enabled = bool(account.ui_state.get(enabled_key, False))
     rule_percent = _float_state(account.ui_state, percent_key, 0.0)
-    largest_profit = _float_state(account.runtime_state, f"calculator_largest_winning_trade_{stage_key}", 0.0)
-    if largest_profit <= 0 and current_pnl > 0:
-        largest_profit = float(current_pnl)
+    largest_profit = _largest_winning_trade(account.runtime_state, stage_key)
     if not enabled:
         return "neutral"
     if rule_percent <= 0 or largest_profit <= 0:
