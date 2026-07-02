@@ -183,6 +183,51 @@ def test_instant_static_keeps_manual_prop_risk() -> None:
     assert _uses_auto_prop_risk(static_config, {}, "funded") is False
 
 
+def test_instant_static_matches_classic_calculator_reference_case() -> None:
+    config = PropFirmConfig(
+        challenge_fee=500.0,
+        nominal_balance=100_000.0,
+        stages=[],
+        funded=FundedConfig(
+            profit_target_for_first_payout=5_000.0,
+            max_loss=6_000.0,
+            daily_loss=3_000.0,
+            max_risk_per_trade=600.0,
+            trader_split=0.8,
+            drawdown_mode="static",
+        ),
+        prop_risk_per_trade=600.0,
+        account_type="instant",
+    )
+    account = AccountState(
+        name="Instant 100k static",
+        config=prop_firm_to_template_config(config),
+        ui_state={
+            "minimum_profitable_days_enabled": True,
+            "minimum_profitable_days_required": 5,
+            "minimum_profitable_day_percent": 0.25,
+        },
+        runtime_state={
+            "calculator_stage_key": "funded",
+            "calculator_current_prop_pnl": 4_800.0,
+            "calculator_trade_risk_applied_funded": 600.0,
+            "calculator_stop_points_funded": 100.0,
+        },
+    )
+
+    summary = build_account_summary(account)
+
+    assert summary.account_type == "instant"
+    assert summary.initial_personal_balance == 416.67
+    assert summary.base_personal_risk == 16.67
+    assert summary.personal_spent == 400.0
+    assert summary.personal_balance == 16.67
+    assert summary.funded_profit == 4_800.0
+    assert summary.funded_split_payout == 3_840.0
+    assert summary.funded_net == 3_440.0
+    assert summary.funded_cleanest == 2_940.0
+
+
 def test_challenge_static_keeps_manual_risk_by_default() -> None:
     account = AccountState(
         name="PipFarm 100k",
