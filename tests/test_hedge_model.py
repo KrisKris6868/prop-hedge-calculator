@@ -486,6 +486,21 @@ def test_trailing_personal_balance_uses_high_watermark_path_and_stops_at_failure
     assert result["Текущий баланс личного счета, $"] == 2100.0
 
 
+def test_personal_balance_treats_funded_next_as_funded_model_stage() -> None:
+    result = calculate_personal_balance_from_prop_pnl(
+        config=make_config(),
+        stage_key="funded_next",
+        current_prop_pnl=0.0,
+        initial_personal_balance=500.0,
+        prop_risk_percent=1.0,
+        mode=CoverageMode.GROW_DEPOSIT_BY_FEE,
+    )
+
+    assert result["Текущий баланс личного счета, $"] >= 0.0
+    assert result["Фактический hedge-win, $"] == 0.0
+    assert result["Фактический hedge-loss, $"] == 0.0
+
+
 def test_funded_payout_preview_uses_current_funded_profit() -> None:
     preview = calculate_funded_payout_preview(
         config=make_config(),

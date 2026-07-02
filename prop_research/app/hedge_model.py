@@ -512,15 +512,18 @@ def calculate_funded_payout_preview(
 
 
 def _stage_plan_row_for_key(plan: StagePlan, stage_key: str) -> StagePlanRow:
-    if stage_key == "funded":
+    if stage_key in {"funded", "funded_next"}:
         return plan.rows[-1]
     stage_number = int(stage_key.replace("phase_", ""))
     return plan.rows[stage_number - 1]
 
 
 def _calculator_stage(stage_key: str, config: PropFirmConfig) -> tuple[str, float, float]:
-    if stage_key == "funded":
-        stage_name = "Instant счет" if getattr(config, "account_type", "challenge") == "instant" else "Funded до первой выплаты"
+    if stage_key in {"funded", "funded_next"}:
+        if stage_key == "funded_next":
+            stage_name = "Funded после выплаты"
+        else:
+            stage_name = "Instant счет" if getattr(config, "account_type", "challenge") == "instant" else "Funded до первой выплаты"
         return stage_name, config.funded.max_loss, config.funded.profit_target_for_first_payout
     stage_number = int(stage_key.replace("phase_", ""))
     stage = config.stages[stage_number - 1]
@@ -528,14 +531,14 @@ def _calculator_stage(stage_key: str, config: PropFirmConfig) -> tuple[str, floa
 
 
 def _configured_max_risk_per_trade(config: PropFirmConfig, stage_key: str) -> float | None:
-    if stage_key == "funded":
+    if stage_key in {"funded", "funded_next"}:
         return getattr(config.funded, "max_risk_per_trade", None)
     stage_number = int(stage_key.replace("phase_", ""))
     return getattr(config.stages[stage_number - 1], "max_risk_per_trade", None)
 
 
 def _stage_drawdown_mode(config: PropFirmConfig, stage_key: str) -> str:
-    if stage_key == "funded":
+    if stage_key in {"funded", "funded_next"}:
         return getattr(config.funded, "drawdown_mode", "static")
     stage_number = int(stage_key.replace("phase_", ""))
     return getattr(config.stages[stage_number - 1], "drawdown_mode", "static")

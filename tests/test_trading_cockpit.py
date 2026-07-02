@@ -440,6 +440,29 @@ def test_summary_caps_prop_risk_to_remaining_target() -> None:
     assert summary.distance_to_target == 400.0
 
 
+def test_funded_next_summary_uses_new_cycle_balance_and_risk() -> None:
+    account = AccountState(
+        name="PipFarm funded next",
+        config=prop_firm_to_template_config(make_config()),
+        ui_state={},
+        runtime_state={
+            "calculator_stage_key": "funded_next",
+            "calculator_current_prop_pnl": 0.0,
+            "calculator_funded_next_start_balance": 500.0,
+            "calculator_stop_points_funded_next": 100.0,
+            "calculator_trade_risk_applied_funded_next": 1_000.0,
+        },
+    )
+
+    summary = build_account_summary(account)
+
+    assert summary.stage_key == "funded_next"
+    assert summary.initial_personal_balance == 500.0
+    assert summary.personal_balance == 500.0
+    assert summary.base_personal_risk == 125.0
+    assert summary.personal_spent == 0.0
+
+
 def test_risk_input_value_never_goes_below_streamlit_minimum() -> None:
     assert _risk_input_value(0.0) == 1.0
     assert _risk_input_value(float("nan")) == 1.0

@@ -108,6 +108,7 @@ def build_account_summary(account: AccountState) -> CockpitSummary:
     stage_key = str(runtime.get("calculator_stage_key") or next(iter(stage_options)))
     if stage_key not in stage_options:
         stage_key = next(iter(stage_options))
+    model_stage_key = _model_stage_key(stage_key)
     current_pnl = _float_state(runtime, "calculator_current_prop_pnl", 0.0)
     stop_points = _float_state(runtime, f"calculator_stop_points_{stage_key}", 100.0)
     manual_prop_risk = _float_state(runtime, f"calculator_trade_risk_applied_{stage_key}", _stage_max_risk(config, stage_key))
@@ -117,7 +118,7 @@ def build_account_summary(account: AccountState) -> CockpitSummary:
     initial_personal_balance = _initial_personal_balance(config, prop_risk_percent, trailing_mode)
     personal_balance_state = calculate_personal_balance_from_prop_pnl(
         config=config,
-        stage_key=stage_key,
+        stage_key=model_stage_key,
         current_prop_pnl=current_pnl,
         initial_personal_balance=initial_personal_balance,
         prop_risk_percent=prop_risk_percent,
@@ -126,12 +127,16 @@ def build_account_summary(account: AccountState) -> CockpitSummary:
         trailing_high_watermark=_float_state(runtime, f"calculator_trailing_high_watermark_{stage_key}", max(0.0, current_pnl)),
     )
     personal_balance = float(personal_balance_state["Текущий баланс личного счета, $"])
-    current_stage_spent = max(0.0, initial_personal_balance - personal_balance)
+    summary_initial_personal_balance = initial_personal_balance
+    if stage_key == "funded_next":
+        summary_initial_personal_balance = _funded_next_start_balance(runtime, initial_personal_balance)
+        personal_balance = round(summary_initial_personal_balance - current_pnl * _funded_next_personal_risk_ratio(config), 2)
+    current_stage_spent = max(0.0, summary_initial_personal_balance - personal_balance)
     completed_spent = _float_state(runtime, "calculator_completed_personal_spent", 0.0) if _account_type(config) == "challenge" else 0.0
     personal_spent = round(completed_spent + current_stage_spent, 2)
     trade = calculate_personal_risk_for_trade(
         config=config,
-        stage_key=stage_key,
+        stage_key=model_stage_key,
         current_prop_pnl=current_pnl,
         initial_personal_balance=initial_personal_balance,
         current_personal_balance=personal_balance,
@@ -146,6 +151,8 @@ def build_account_summary(account: AccountState) -> CockpitSummary:
     )
     effective_prop_risk = float(trade["Риск пропа, $"])
     base_personal_risk = _finite_amount(float(trade["Риск личного, $"]))
+    if stage_key == "funded_next":
+        base_personal_risk = round(effective_prop_risk * _funded_next_personal_risk_ratio(config), 2)
     personal_risk = _personal_risk_with_execution_costs(base_personal_risk, stop_points, ui_state)
     prop_lot = _lot_from_risk_and_stop_points(effective_prop_risk, stop_points)
     hedge_lot = _lot_from_risk_and_stop_points(base_personal_risk, stop_points)
@@ -177,7 +184,7 @@ def build_account_summary(account: AccountState) -> CockpitSummary:
         consistency_text=_consistency_text(account, stage_key, current_pnl),
         minimum_days_text=_minimum_days_text(account, config, stage_key, current_pnl),
         personal_spent=personal_spent,
-        initial_personal_balance=initial_personal_balance,
+        initial_personal_balance=summary_initial_personal_balance,
         prop_account_size=float(config.nominal_balance),
         funded_profit=funded_profit,
         funded_split_payout=funded_split_payout,
@@ -1072,6 +1079,19 @@ def _uses_auto_prop_risk(config: PropFirmConfig, ui_state: dict, stage_key: str)
         and str(ui_state.get("instant_prop_risk_strategy", "Вручную")) == "Экономный trailing"
         and config.funded.drawdown_mode == "trailing"
     )
+
+
+def _model_stage_key(stage_key: str) -> str:
+    return "funded" if stage_key in {"funded", "funded_next"} else stage_key
+
+
+def _funded_next_start_balance(runtime: dict, fallback: float) -> float:
+    saved = _float_state(runtime, "calculator_funded_next_start_balance", 0.0)
+    return saved if saved > 0 else float(fallback)
+
+
+def _funded_next_personal_risk_ratio(config: PropFirmConfig) -> float:
+    return (float(config.nominal_balance) * 0.01) / max(1.0, _stage_max_loss(config, "funded"))
 
 
 def _execution_buffer_mode(ui_state: dict) -> str:
