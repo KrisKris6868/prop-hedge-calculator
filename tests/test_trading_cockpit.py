@@ -7,6 +7,7 @@ from prop_research.app.trading_cockpit import (
     _minimum_days_state,
     _minimum_days_text,
     _pnl_step_for_stage,
+    _risk_input_value,
     _trailing_line_text,
     apply_template_to_account_state,
     build_default_account_config,
@@ -353,6 +354,12 @@ def test_summary_caps_prop_risk_to_remaining_target() -> None:
     assert summary.prop_risk == 400.0
     assert summary.prop_lot == 2.67
     assert summary.distance_to_target == 400.0
+
+
+def test_risk_input_value_never_goes_below_streamlit_minimum() -> None:
+    assert _risk_input_value(0.0) == 1.0
+    assert _risk_input_value(float("nan")) == 1.0
+    assert _risk_input_value(500.0) == 500.0
 
 
 def test_preview_caps_pnl_to_stage_target() -> None:

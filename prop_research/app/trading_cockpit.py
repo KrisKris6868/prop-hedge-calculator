@@ -780,7 +780,7 @@ def _render_account_workbench(st, account: AccountState) -> AccountState:
     risk_default = saved_summary.prop_risk if auto_prop_risk else _float_state(account.runtime_state, f"calculator_trade_risk_applied_{stage_key}", _stage_max_risk(config, stage_key))
     risk = control_2.number_input(
         "Риск пропа",
-        value=risk_default,
+        value=_risk_input_value(risk_default),
         min_value=1.0,
         step=100.0,
         disabled=auto_prop_risk,
@@ -1206,6 +1206,10 @@ def _pnl_step_for_stage(config: PropFirmConfig, stage_key: str, current_pnl: flo
     if remaining <= 0:
         return risk_step
     return max(1.0, min(risk_step, remaining))
+
+
+def _risk_input_value(value: float) -> float:
+    return max(1.0, _finite_amount(float(value)))
 
 
 def _stage_daily_loss(config: PropFirmConfig, stage_key: str) -> float | None:
