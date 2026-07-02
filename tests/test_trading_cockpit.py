@@ -129,6 +129,44 @@ def test_execution_buffer_increases_personal_risk_for_every_account_type() -> No
     assert buffered.personal_risk == round(base.personal_risk * 1.10, 2)
 
 
+def test_execution_buffer_is_converted_to_stop_points_automatically() -> None:
+    account = AccountState(
+        name="PipFarm 100k",
+        config=prop_firm_to_template_config(make_config()),
+        ui_state={"execution_buffer_mode": "light_5"},
+        runtime_state={
+            "calculator_stage_key": "phase_1",
+            "calculator_current_prop_pnl": 0.0,
+            "calculator_stop_points_phase_1": 160.0,
+            "calculator_trade_risk_applied_phase_1": 1_000.0,
+        },
+    )
+
+    summary = build_account_summary(account)
+
+    assert summary.hedge_lot == 0.16
+    assert summary.personal_risk == 26.28
+
+
+def test_manual_execution_costs_are_added_on_top_of_auto_buffer_points() -> None:
+    account = AccountState(
+        name="PipFarm 100k",
+        config=prop_firm_to_template_config(make_config()),
+        ui_state={"execution_buffer_mode": "light_5", "execution_spread_points": 10.0},
+        runtime_state={
+            "calculator_stage_key": "phase_1",
+            "calculator_current_prop_pnl": 0.0,
+            "calculator_stop_points_phase_1": 100.0,
+            "calculator_trade_risk_applied_phase_1": 1_000.0,
+        },
+    )
+
+    summary = build_account_summary(account)
+
+    assert summary.hedge_lot == 0.25
+    assert summary.personal_risk == 28.75
+
+
 def test_execution_costs_are_added_to_personal_risk_without_changing_lot() -> None:
     base_account = AccountState(
         name="PipFarm 100k",

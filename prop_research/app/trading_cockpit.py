@@ -25,7 +25,6 @@ from prop_research.app.streamlit_app import (
     _lot_from_risk_and_stop_points,
     _next_stage_key,
     _next_stage_label,
-    _personal_risk_with_execution_buffer,
     _risk_percent_from_amount,
     _stage_max_risk,
     _stage_options,
@@ -146,10 +145,9 @@ def build_account_summary(account: AccountState) -> CockpitSummary:
     )
     effective_prop_risk = float(trade["Риск пропа, $"])
     base_personal_risk = _finite_amount(float(trade["Риск личного, $"]))
-    buffered_personal_risk = _personal_risk_with_execution_buffer(base_personal_risk, _execution_buffer_mode(ui_state))
-    personal_risk = _personal_risk_with_execution_costs(buffered_personal_risk, stop_points, ui_state)
+    personal_risk = _personal_risk_with_execution_costs(base_personal_risk, stop_points, ui_state)
     prop_lot = _lot_from_risk_and_stop_points(effective_prop_risk, stop_points)
-    hedge_lot = _lot_from_risk_and_stop_points(buffered_personal_risk, stop_points)
+    hedge_lot = _lot_from_risk_and_stop_points(base_personal_risk, stop_points)
     margin_topup = _margin_topup_for_runtime(runtime, stage_key, personal_balance, personal_risk, stop_points)
     distance_to_target = float(trade["distance_to_target"])
     distance_to_max_loss = float(trade["distance_to_max_loss"])
@@ -574,6 +572,7 @@ def _render_account_settings(st, account: AccountState | None) -> None:
             step=1.0,
             key=f"settings_execution_commission_lot_{account.name}",
         )
+        st.caption("Execution buffer сам добавляется к риску как процент от стопа. Ручные поля — только дополнительная погрешность сверху.")
         instant_prop_risk_strategy = str(account.ui_state.get("instant_prop_risk_strategy", "Вручную"))
         if kind == "Инстант":
             instant_prop_risk_strategy = st.selectbox(
@@ -1054,12 +1053,23 @@ def _execution_buffer_mode(ui_state: dict) -> str:
     return str(ui_state.get("execution_buffer_mode", "off"))
 
 
+def _execution_buffer_ratio(ui_state: dict) -> float:
+    ratios = {
+        "off": 0.0,
+        "light_5": 0.05,
+        "normal_10": 0.10,
+        "safety_15": 0.15,
+    }
+    return ratios.get(_execution_buffer_mode(ui_state), 0.0)
+
+
 def _personal_risk_with_execution_costs(personal_risk: float, stop_points: float, ui_state: dict) -> float:
     clean_risk = max(0.0, float(personal_risk))
     hedge_lot = _lot_from_risk_and_stop_points(clean_risk, stop_points)
-    spread_points = max(0.0, _float_state(ui_state, "execution_spread_points", 0.0))
+    auto_buffer_points = max(0.0, float(stop_points)) * _execution_buffer_ratio(ui_state)
+    manual_spread_points = max(0.0, _float_state(ui_state, "execution_spread_points", 0.0))
     commission_per_lot = max(0.0, _float_state(ui_state, "execution_commission_per_lot", 0.0))
-    return round(clean_risk + hedge_lot * (spread_points + commission_per_lot), 2)
+    return round(clean_risk + hedge_lot * (auto_buffer_points + manual_spread_points + commission_per_lot), 2)
 
 
 def _margin_topup_for_runtime(runtime: dict, stage_key: str, personal_balance: float, personal_risk: float, stop_points: float) -> float:
