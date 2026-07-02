@@ -864,7 +864,7 @@ def _render_account_workbench(st, account: AccountState) -> AccountState:
         _risk_card_html(
             "Риск личного hedge",
             _money(summary.personal_risk),
-            f"<strong>{summary.hedge_lot:.2f} lot</strong><br>без buffer {_money(summary.base_personal_risk)}",
+            f"<strong>{summary.hedge_lot:.2f} lot</strong>{_execution_buffer_label(preview.ui_state)}<br>без buffer {_money(summary.base_personal_risk)}",
         ),
         _metric_card_html("Текущий PnL", _money(summary.current_pnl), f"До цели {_money(summary.distance_to_target)}"),
         _metric_card_html("Баланс личного", _money(summary.personal_balance), "после текущего PnL"),
@@ -1086,6 +1086,13 @@ def _execution_buffer_ratio(ui_state: dict) -> float:
         "safety_15": 0.15,
     }
     return ratios.get(_execution_buffer_mode(ui_state), 0.0)
+
+
+def _execution_buffer_label(ui_state: dict) -> str:
+    percent = _execution_buffer_ratio(ui_state) * 100
+    if percent <= 0:
+        return ""
+    return f" · buffer {percent:g}%"
 
 
 def _personal_risk_with_execution_costs(personal_risk: float, stop_points: float, ui_state: dict) -> float:

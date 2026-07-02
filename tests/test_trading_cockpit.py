@@ -3,6 +3,7 @@ from dataclasses import replace
 from prop_research.app.trading_cockpit import (
     _consistency_state,
     _consistency_text,
+    _execution_buffer_label,
     _execution_settings_changed,
     _funded_payout_values,
     _minimum_days_state,
@@ -203,6 +204,13 @@ def test_execution_settings_changed_ignores_missing_default_values() -> None:
         {"execution_buffer_mode": "off", "execution_spread_points": 0.0, "execution_commission_per_lot": 0.0},
     )
     assert _execution_settings_changed({}, {"execution_buffer_mode": "light_5"})
+
+
+def test_execution_buffer_label_is_shown_only_when_enabled() -> None:
+    assert _execution_buffer_label({}) == ""
+    assert _execution_buffer_label({"execution_buffer_mode": "off"}) == ""
+    assert _execution_buffer_label({"execution_buffer_mode": "light_5"}) == " · buffer 5%"
+    assert _execution_buffer_label({"execution_buffer_mode": "normal_10"}) == " · buffer 10%"
 
 
 def test_create_account_state_from_template_starts_clean_path() -> None:
