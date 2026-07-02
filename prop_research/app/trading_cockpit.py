@@ -52,6 +52,7 @@ class CockpitSummary:
     current_pnl: float
     prop_risk: float
     personal_risk: float
+    base_personal_risk: float
     prop_lot: float
     hedge_lot: float
     personal_balance: float
@@ -165,6 +166,7 @@ def build_account_summary(account: AccountState) -> CockpitSummary:
         current_pnl=current_pnl,
         prop_risk=effective_prop_risk,
         personal_risk=personal_risk,
+        base_personal_risk=base_personal_risk,
         prop_lot=prop_lot,
         hedge_lot=hedge_lot,
         personal_balance=personal_balance,
@@ -673,6 +675,17 @@ def _render_account_settings(st, account: AccountState | None) -> None:
         ui_state["execution_spread_points"] = float(execution_spread_points)
         ui_state["execution_commission_per_lot"] = float(execution_commission_per_lot)
         ui_state["instant_prop_risk_strategy"] = instant_prop_risk_strategy
+        if _execution_settings_changed(account.ui_state, ui_state):
+            _save_account(
+                AccountState(
+                    name=account.name,
+                    config=account.config,
+                    ui_state=ui_state,
+                    runtime_state=account.runtime_state,
+                )
+            )
+            st.session_state["cockpit_pending_selected_account"] = account.name
+            st.rerun()
         _render_rule_settings(st, ui_state, account.name, kind)
 
         if st.button("Сохранить настройки счета", use_container_width=True, key=f"settings_save_{account.name}"):
@@ -764,6 +777,14 @@ def _execution_buffer_index(ui_state: dict) -> int:
     return modes.index(current) if current in modes else 0
 
 
+def _execution_settings_changed(old_ui_state: dict, new_ui_state: dict) -> bool:
+    return (
+        _execution_buffer_mode(old_ui_state) != _execution_buffer_mode(new_ui_state)
+        or _float_state(old_ui_state, "execution_spread_points", 0.0) != _float_state(new_ui_state, "execution_spread_points", 0.0)
+        or _float_state(old_ui_state, "execution_commission_per_lot", 0.0) != _float_state(new_ui_state, "execution_commission_per_lot", 0.0)
+    )
+
+
 def _render_accounts_dashboard(st, pd, summaries: list[CockpitSummary]) -> None:
     with st.expander("Все активные счета", expanded=False):
         rows = [
@@ -840,7 +861,11 @@ def _render_account_workbench(st, account: AccountState) -> AccountState:
     margin_label = "Маржа ок" if summary.margin_topup <= 0 else f"Докинуть {_money(summary.margin_topup)}"
     cards = [
         _risk_card_html("Риск пропа", _money(summary.prop_risk), f"<strong>{summary.prop_lot:.2f} lot</strong> · стоп {stop_points:.0f}п"),
-        _risk_card_html("Риск личного hedge", _money(summary.personal_risk), f"<strong>{summary.hedge_lot:.2f} lot</strong>"),
+        _risk_card_html(
+            "Риск личного hedge",
+            _money(summary.personal_risk),
+            f"<strong>{summary.hedge_lot:.2f} lot</strong><br>без buffer {_money(summary.base_personal_risk)}",
+        ),
         _metric_card_html("Текущий PnL", _money(summary.current_pnl), f"До цели {_money(summary.distance_to_target)}"),
         _metric_card_html("Баланс личного", _money(summary.personal_balance), "после текущего PnL"),
         _metric_card_html("Осталось до max loss", _money(summary.distance_to_max_loss), ""),

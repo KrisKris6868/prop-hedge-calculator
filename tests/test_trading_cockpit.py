@@ -3,6 +3,7 @@ from dataclasses import replace
 from prop_research.app.trading_cockpit import (
     _consistency_state,
     _consistency_text,
+    _execution_settings_changed,
     _funded_payout_values,
     _minimum_days_state,
     _minimum_days_text,
@@ -145,6 +146,7 @@ def test_execution_buffer_is_converted_to_stop_points_automatically() -> None:
     summary = build_account_summary(account)
 
     assert summary.hedge_lot == 0.16
+    assert summary.base_personal_risk == 25.0
     assert summary.personal_risk == 26.28
 
 
@@ -164,6 +166,7 @@ def test_manual_execution_costs_are_added_on_top_of_auto_buffer_points() -> None
     summary = build_account_summary(account)
 
     assert summary.hedge_lot == 0.25
+    assert summary.base_personal_risk == 25.0
     assert summary.personal_risk == 28.75
 
 
@@ -190,7 +193,16 @@ def test_execution_costs_are_added_to_personal_risk_without_changing_lot() -> No
     costed = build_account_summary(costed_account)
 
     assert costed.hedge_lot == base.hedge_lot
+    assert costed.base_personal_risk == base.base_personal_risk
     assert costed.personal_risk == round(base.personal_risk + base.hedge_lot * 20.0, 2)
+
+
+def test_execution_settings_changed_ignores_missing_default_values() -> None:
+    assert not _execution_settings_changed(
+        {},
+        {"execution_buffer_mode": "off", "execution_spread_points": 0.0, "execution_commission_per_lot": 0.0},
+    )
+    assert _execution_settings_changed({}, {"execution_buffer_mode": "light_5"})
 
 
 def test_create_account_state_from_template_starts_clean_path() -> None:
